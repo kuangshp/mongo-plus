@@ -2,26 +2,181 @@
 package repository
 
 import (
+	context "context"
 	mongoplus "github.com/kuangshp/mongo-plus"
 	model "github.com/kuangshp/mongo-plus/examples/query/model"
+	mongo "go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// iDefaultTokenRepository 的基础方法签名随生成代码更新。
-// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
-// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
-// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
-type iDefaultTokenRepository interface {
-	mongoplus.Contract[model.TokenEntity, string]
-}
-
-// defaultTokenRepository 实现生成的基础仓储，业务扩展在同名非生成文件。
+// defaultTokenRepository 实现生成的基础仓储。
+// 嵌入公共执行器以保留集合来源；下方显式生成基础方法，业务可在 customerTokenRepository 覆盖。
 type defaultTokenRepository struct {
 	*mongoplus.Repository[model.TokenEntity, string]
 }
 
-// newDefaultTokenRepository 使用生成时解析的全局/实体配置。
-func newDefaultTokenRepository(db *mongoplus.Database) *defaultTokenRepository {
-	return &defaultTokenRepository{Repository: mongoplus.MustRepository[model.TokenEntity, string](db, mongoplus.CollectionConfig{
+type iDefaultTokenRepository interface {
+	// Create 创建记录，成功后回填主键和自动字段。
+	Create(ctx context.Context, m *model.TokenEntity) error
+	// CreateBatch 有序批量创建；整批回滚请使用 Transaction 和 txCtx。
+	CreateBatch(ctx context.Context, m []*model.TokenEntity) error
+	// DeleteById 默认遵循逻辑删除配置，可通过 DeleteOption 显式物理删除。
+	DeleteById(ctx context.Context, id string, opts ...mongoplus.DeleteOption) (int64, error)
+	DeleteByIdList(ctx context.Context, ids []string, opts ...mongoplus.DeleteOption) (int64, error)
+	DeleteByCondition(ctx context.Context, conditions ...mongoplus.Condition) (int64, error)
+	DeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.DeleteOption) (int64, error)
+	// UpdateById 显式更新指定字段，保留零值并检查写入确认。
+	UpdateById(ctx context.Context, id string, opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error)
+	UpdateMapById(ctx context.Context, id string, data map[string]any) (*mongo.UpdateResult, error)
+	UpdateByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error)
+	// FindList 查询列表，支持 QueryOpt 的过滤、排序、投影和可选缓存。
+	FindList(ctx context.Context, query ...mongoplus.QueryOption) ([]*model.TokenEntity, error)
+	FindListByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.TokenEntity, error)
+	// FindPage 通过公共执行器统一使用 DbPage 进行分页。
+	FindPage(ctx context.Context, pageNumber, pageSize int64, query ...mongoplus.QueryOption) ([]*model.TokenEntity, int64, error)
+	FindPageByWrapper(ctx context.Context, pageNumber, pageSize int64, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.TokenEntity, int64, error)
+	FindById(ctx context.Context, id string, query ...mongoplus.QueryOption) (*model.TokenEntity, error)
+	FindByIdList(ctx context.Context, ids []string, query ...mongoplus.QueryOption) ([]*model.TokenEntity, error)
+	FindOne(ctx context.Context, query ...mongoplus.QueryOption) (*model.TokenEntity, error)
+	FindOneWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (*model.TokenEntity, error)
+	Exists(ctx context.Context, query ...mongoplus.QueryOption) (bool, error)
+	ExistsByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (bool, error)
+	Count(ctx context.Context, query ...mongoplus.QueryOption) (int64, error)
+	CountByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (int64, error)
+	// MongoDB 扩展：关联聚合、游标分页、流式读取及恢复。
+	mongoplus.Source
+	// WithContext 创建关联聚合查询，沿用租户、取消信号和事务上下文。
+	WithContext(ctx context.Context) *mongoplus.Aggregation
+	FindCursorPage(ctx context.Context, after *string, size int64, query ...mongoplus.QueryOption) (mongoplus.CursorPage[model.TokenEntity, string], error)
+	Walk(ctx context.Context, fn func(*model.TokenEntity) error, query ...mongoplus.QueryOption) error
+	RestoreById(ctx context.Context, id string) (int64, error)
+	HardDeleteById(ctx context.Context, id string) (int64, error)
+	HardDeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper)) (int64, error)
+	Native() *mongo.Collection
+}
+
+var _ iDefaultTokenRepository = (*defaultTokenRepository)(nil)
+
+// 所有生成方法统一经过公共执行器，保留租户、逻辑删除、缓存失效及写入确认检查。
+// 事务中的读写传入 txCtx；MongoDB Session 随 Context 传递。
+func (r *defaultTokenRepository) Create(ctx context.Context, m *model.TokenEntity) error {
+	return r.Repository.Create(ctx, m)
+}
+
+func (r *defaultTokenRepository) CreateBatch(ctx context.Context, m []*model.TokenEntity) error {
+	return r.Repository.CreateBatch(ctx, m)
+}
+
+func (r *defaultTokenRepository) DeleteById(ctx context.Context, id string, opts ...mongoplus.DeleteOption) (int64, error) {
+	return r.Repository.DeleteById(ctx, id, opts...)
+}
+
+func (r *defaultTokenRepository) DeleteByIdList(ctx context.Context, ids []string, opts ...mongoplus.DeleteOption) (int64, error) {
+	return r.Repository.DeleteByIdList(ctx, ids, opts...)
+}
+
+func (r *defaultTokenRepository) DeleteByCondition(ctx context.Context, conditions ...mongoplus.Condition) (int64, error) {
+	return r.Repository.DeleteByCondition(ctx, conditions...)
+}
+
+func (r *defaultTokenRepository) DeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.DeleteOption) (int64, error) {
+	return r.Repository.DeleteByWrapper(ctx, fn, opts...)
+}
+
+func (r *defaultTokenRepository) UpdateById(ctx context.Context, id string, opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error) {
+	return r.Repository.UpdateById(ctx, id, opts...)
+}
+
+func (r *defaultTokenRepository) UpdateMapById(ctx context.Context, id string, data map[string]any) (*mongo.UpdateResult, error) {
+	return r.Repository.UpdateMapById(ctx, id, data)
+}
+
+func (r *defaultTokenRepository) UpdateByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error) {
+	return r.Repository.UpdateByWrapper(ctx, fn, opts...)
+}
+
+func (r *defaultTokenRepository) FindList(ctx context.Context, query ...mongoplus.QueryOption) ([]*model.TokenEntity, error) {
+	return r.Repository.FindList(ctx, query...)
+}
+
+func (r *defaultTokenRepository) FindListByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.TokenEntity, error) {
+	return r.Repository.FindListByWrapper(ctx, fn, query...)
+}
+
+func (r *defaultTokenRepository) FindPage(ctx context.Context, pageNumber, pageSize int64, query ...mongoplus.QueryOption) ([]*model.TokenEntity, int64, error) {
+	return r.Repository.FindPage(ctx, pageNumber, pageSize, query...)
+}
+
+func (r *defaultTokenRepository) FindPageByWrapper(ctx context.Context, pageNumber, pageSize int64, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.TokenEntity, int64, error) {
+	return r.Repository.FindPageByWrapper(ctx, pageNumber, pageSize, fn, query...)
+}
+
+func (r *defaultTokenRepository) FindById(ctx context.Context, id string, query ...mongoplus.QueryOption) (*model.TokenEntity, error) {
+	return r.Repository.FindById(ctx, id, query...)
+}
+
+func (r *defaultTokenRepository) FindByIdList(ctx context.Context, ids []string, query ...mongoplus.QueryOption) ([]*model.TokenEntity, error) {
+	return r.Repository.FindByIdList(ctx, ids, query...)
+}
+
+func (r *defaultTokenRepository) FindOne(ctx context.Context, query ...mongoplus.QueryOption) (*model.TokenEntity, error) {
+	return r.Repository.FindOne(ctx, query...)
+}
+
+func (r *defaultTokenRepository) FindOneWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (*model.TokenEntity, error) {
+	return r.Repository.FindOneWrapper(ctx, fn, query...)
+}
+
+func (r *defaultTokenRepository) Exists(ctx context.Context, query ...mongoplus.QueryOption) (bool, error) {
+	return r.Repository.Exists(ctx, query...)
+}
+
+func (r *defaultTokenRepository) ExistsByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (bool, error) {
+	return r.Repository.ExistsByWrapper(ctx, fn, query...)
+}
+
+func (r *defaultTokenRepository) Count(ctx context.Context, query ...mongoplus.QueryOption) (int64, error) {
+	return r.Repository.Count(ctx, query...)
+}
+
+func (r *defaultTokenRepository) CountByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (int64, error) {
+	return r.Repository.CountByWrapper(ctx, fn, query...)
+}
+
+func (r *defaultTokenRepository) WithContext(ctx context.Context) *mongoplus.Aggregation {
+	return r.Repository.WithContext(ctx)
+}
+
+func (r *defaultTokenRepository) FindCursorPage(ctx context.Context, after *string, size int64, query ...mongoplus.QueryOption) (mongoplus.CursorPage[model.TokenEntity, string], error) {
+	return r.Repository.FindCursorPage(ctx, after, size, query...)
+}
+
+func (r *defaultTokenRepository) Walk(ctx context.Context, fn func(*model.TokenEntity) error, query ...mongoplus.QueryOption) error {
+	return r.Repository.Walk(ctx, fn, query...)
+}
+
+func (r *defaultTokenRepository) RestoreById(ctx context.Context, id string) (int64, error) {
+	return r.Repository.RestoreById(ctx, id)
+}
+
+func (r *defaultTokenRepository) HardDeleteById(ctx context.Context, id string) (int64, error) {
+	return r.Repository.HardDeleteById(ctx, id)
+}
+
+func (r *defaultTokenRepository) HardDeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper)) (int64, error) {
+	return r.Repository.HardDeleteByWrapper(ctx, fn)
+}
+
+func (r *defaultTokenRepository) Native() *mongo.Collection {
+	return r.Repository.Native()
+}
+
+// newDefaultTokenRepository 使用默认连接或显式连接，以及生成时解析的集合配置。
+func newDefaultTokenRepository(db ...*mongoplus.Database) *defaultTokenRepository {
+	database := mongoplus.DefaultDB()
+	if len(db) > 0 {
+		database = db[0]
+	}
+	return &defaultTokenRepository{Repository: mongoplus.MustRepository[model.TokenEntity, string](database, mongoplus.CollectionConfig{
 		Name: "tokens",
 		ID: mongoplus.IDConfig{
 			Type:       mongoplus.IDTypeString,

@@ -157,7 +157,10 @@ func render(e schema.Entity, modelImport string, c schema.Config) (model, dao, r
 	if err != nil {
 		return
 	}
-	repo, err = source(c.PackageName("repository"), body, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
+	repo, err = source(c.PackageName("repository"), body, map[string]string{
+		"context": "context", "mongo": "go.mongodb.org/mongo-driver/v2/mongo",
+		"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport,
+	})
 	if err != nil {
 		return
 	}

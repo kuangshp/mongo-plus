@@ -5,7 +5,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// Contract 定义生成 Repository 的基础能力；业务接口可嵌入后增加自定义方法。
+// Contract 定义公共仓储的基础能力，供接口约束和手写仓储复用。
+// 生成 Repository 显式声明对应方法，业务扩展接口继续嵌入生成的 iDefault 接口。
 type Contract[T any, K ID] interface {
 	Source
 	WithContext(context.Context) *Aggregation

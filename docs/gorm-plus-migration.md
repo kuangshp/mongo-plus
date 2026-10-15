@@ -43,7 +43,9 @@ userRepository := repository.NewUserRepository()
 
 `mongoConfig` 来自业务项目配置。已有官方驱动数据库可以用 `mongoplus.NewDatabase(nativeDB)` 包装。Repository 在启动时创建一次并复用；只有拥有 Client 的入口负责关闭连接。
 
-生成的 `iDefaultUserRepository` 嵌入 `mongoplus.Contract`，因此新增的基础方法会自动出现在业务 Repository 接口上。业务扩展、DTO、VO 首次创建后不覆盖；实体或生成配置变化时仍从源定义重新生成。若业务项目手写了 Repository mock/实现，新增方法和可变参数签名需要同步调整。
+Repository 模板按 gorm-plus 的结构组织：`user_gen.go` 显式声明 `defaultUserRepository`、`iDefaultUserRepository`、各基础方法及 `newDefaultUserRepository`；`user.go` 声明 `customerUserRepository`、对外接口、编译期接口检查和 `NewUserRepository`。接口不再通过嵌入 `mongoplus.Contract` 隐式取得方法。新增基础能力后需要重新生成 `_gen.go`。
+
+生成方法统一调用公共 MongoDB 执行器，保留租户、逻辑删除、缓存失效、写入确认和 Session Context 行为。业务自定义方法写在 `customerUserRepository` 上，并在 `UserRepository` 接口中声明；覆盖基础方法时使用相同签名。原有扩展文件可以继续使用，生成器不会覆盖业务扩展、DTO、VO。若业务项目手写了 Repository mock/实现，新增方法和可变参数签名需要同步调整。
 
 ## 条件、分组与分页
 

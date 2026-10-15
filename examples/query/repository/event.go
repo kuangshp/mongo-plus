@@ -4,14 +4,16 @@ import (
 	mongoplus "github.com/kuangshp/mongo-plus"
 )
 
-// EventRepository 是业务扩展接口；此文件首次创建后不再覆盖。
-// 基础读写在 iDefaultEventRepository。自定义查询加在 customerEventRepository 上。
-type EventRepository interface {
-	iDefaultEventRepository
-}
-
+// customerEventRepository 是业务自定义仓储；此文件首次创建后不再覆盖。
+// 自定义方法写在此结构体上；覆盖基础方法时保持相同的方法签名。
 type customerEventRepository struct {
 	*defaultEventRepository
+}
+
+// EventRepository 对外暴露基础能力与业务扩展方法。
+// 新增自定义方法时在此接口声明。
+type EventRepository interface {
+	iDefaultEventRepository
 }
 
 var _ EventRepository = (*customerEventRepository)(nil)
@@ -19,11 +21,9 @@ var _ EventRepository = (*customerEventRepository)(nil)
 // NewEventRepository 创建仓储。
 // 不传连接时使用 mongoplus.Use 注册的默认数据库；传入连接时优先使用参数。
 func NewEventRepository(db ...*mongoplus.Database) EventRepository {
-	database := mongoplus.DefaultDB()
-	if len(db) > 0 {
-		database = db[0]
+	return &customerEventRepository{
+		defaultEventRepository: newDefaultEventRepository(db...),
 	}
-	return &customerEventRepository{newDefaultEventRepository(database)}
 }
 
 // 自定义查询示例。取消注释后补上 context 与 dao 的导入，再按实际字段调整 Like/WhereIf。

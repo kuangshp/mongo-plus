@@ -2,27 +2,182 @@
 package repository
 
 import (
+	context "context"
 	mongoplus "github.com/kuangshp/mongo-plus"
 	model "github.com/kuangshp/mongo-plus/examples/query/model"
 	bson "go.mongodb.org/mongo-driver/v2/bson"
+	mongo "go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// iDefaultEventRepository 的基础方法签名随生成代码更新。
-// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
-// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
-// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
-type iDefaultEventRepository interface {
-	mongoplus.Contract[model.EventEntity, bson.ObjectID]
-}
-
-// defaultEventRepository 实现生成的基础仓储，业务扩展在同名非生成文件。
+// defaultEventRepository 实现生成的基础仓储。
+// 嵌入公共执行器以保留集合来源；下方显式生成基础方法，业务可在 customerEventRepository 覆盖。
 type defaultEventRepository struct {
 	*mongoplus.Repository[model.EventEntity, bson.ObjectID]
 }
 
-// newDefaultEventRepository 使用生成时解析的全局/实体配置。
-func newDefaultEventRepository(db *mongoplus.Database) *defaultEventRepository {
-	return &defaultEventRepository{Repository: mongoplus.MustRepository[model.EventEntity, bson.ObjectID](db, mongoplus.CollectionConfig{
+type iDefaultEventRepository interface {
+	// Create 创建记录，成功后回填主键和自动字段。
+	Create(ctx context.Context, m *model.EventEntity) error
+	// CreateBatch 有序批量创建；整批回滚请使用 Transaction 和 txCtx。
+	CreateBatch(ctx context.Context, m []*model.EventEntity) error
+	// DeleteById 默认遵循逻辑删除配置，可通过 DeleteOption 显式物理删除。
+	DeleteById(ctx context.Context, id bson.ObjectID, opts ...mongoplus.DeleteOption) (int64, error)
+	DeleteByIdList(ctx context.Context, ids []bson.ObjectID, opts ...mongoplus.DeleteOption) (int64, error)
+	DeleteByCondition(ctx context.Context, conditions ...mongoplus.Condition) (int64, error)
+	DeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.DeleteOption) (int64, error)
+	// UpdateById 显式更新指定字段，保留零值并检查写入确认。
+	UpdateById(ctx context.Context, id bson.ObjectID, opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error)
+	UpdateMapById(ctx context.Context, id bson.ObjectID, data map[string]any) (*mongo.UpdateResult, error)
+	UpdateByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error)
+	// FindList 查询列表，支持 QueryOpt 的过滤、排序、投影和可选缓存。
+	FindList(ctx context.Context, query ...mongoplus.QueryOption) ([]*model.EventEntity, error)
+	FindListByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.EventEntity, error)
+	// FindPage 通过公共执行器统一使用 DbPage 进行分页。
+	FindPage(ctx context.Context, pageNumber, pageSize int64, query ...mongoplus.QueryOption) ([]*model.EventEntity, int64, error)
+	FindPageByWrapper(ctx context.Context, pageNumber, pageSize int64, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.EventEntity, int64, error)
+	FindById(ctx context.Context, id bson.ObjectID, query ...mongoplus.QueryOption) (*model.EventEntity, error)
+	FindByIdList(ctx context.Context, ids []bson.ObjectID, query ...mongoplus.QueryOption) ([]*model.EventEntity, error)
+	FindOne(ctx context.Context, query ...mongoplus.QueryOption) (*model.EventEntity, error)
+	FindOneWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (*model.EventEntity, error)
+	Exists(ctx context.Context, query ...mongoplus.QueryOption) (bool, error)
+	ExistsByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (bool, error)
+	Count(ctx context.Context, query ...mongoplus.QueryOption) (int64, error)
+	CountByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (int64, error)
+	// MongoDB 扩展：关联聚合、游标分页、流式读取及恢复。
+	mongoplus.Source
+	// WithContext 创建关联聚合查询，沿用租户、取消信号和事务上下文。
+	WithContext(ctx context.Context) *mongoplus.Aggregation
+	FindCursorPage(ctx context.Context, after *bson.ObjectID, size int64, query ...mongoplus.QueryOption) (mongoplus.CursorPage[model.EventEntity, bson.ObjectID], error)
+	Walk(ctx context.Context, fn func(*model.EventEntity) error, query ...mongoplus.QueryOption) error
+	RestoreById(ctx context.Context, id bson.ObjectID) (int64, error)
+	HardDeleteById(ctx context.Context, id bson.ObjectID) (int64, error)
+	HardDeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper)) (int64, error)
+	Native() *mongo.Collection
+}
+
+var _ iDefaultEventRepository = (*defaultEventRepository)(nil)
+
+// 所有生成方法统一经过公共执行器，保留租户、逻辑删除、缓存失效及写入确认检查。
+// 事务中的读写传入 txCtx；MongoDB Session 随 Context 传递。
+func (r *defaultEventRepository) Create(ctx context.Context, m *model.EventEntity) error {
+	return r.Repository.Create(ctx, m)
+}
+
+func (r *defaultEventRepository) CreateBatch(ctx context.Context, m []*model.EventEntity) error {
+	return r.Repository.CreateBatch(ctx, m)
+}
+
+func (r *defaultEventRepository) DeleteById(ctx context.Context, id bson.ObjectID, opts ...mongoplus.DeleteOption) (int64, error) {
+	return r.Repository.DeleteById(ctx, id, opts...)
+}
+
+func (r *defaultEventRepository) DeleteByIdList(ctx context.Context, ids []bson.ObjectID, opts ...mongoplus.DeleteOption) (int64, error) {
+	return r.Repository.DeleteByIdList(ctx, ids, opts...)
+}
+
+func (r *defaultEventRepository) DeleteByCondition(ctx context.Context, conditions ...mongoplus.Condition) (int64, error) {
+	return r.Repository.DeleteByCondition(ctx, conditions...)
+}
+
+func (r *defaultEventRepository) DeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.DeleteOption) (int64, error) {
+	return r.Repository.DeleteByWrapper(ctx, fn, opts...)
+}
+
+func (r *defaultEventRepository) UpdateById(ctx context.Context, id bson.ObjectID, opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error) {
+	return r.Repository.UpdateById(ctx, id, opts...)
+}
+
+func (r *defaultEventRepository) UpdateMapById(ctx context.Context, id bson.ObjectID, data map[string]any) (*mongo.UpdateResult, error) {
+	return r.Repository.UpdateMapById(ctx, id, data)
+}
+
+func (r *defaultEventRepository) UpdateByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), opts ...mongoplus.UpdateOption) (*mongo.UpdateResult, error) {
+	return r.Repository.UpdateByWrapper(ctx, fn, opts...)
+}
+
+func (r *defaultEventRepository) FindList(ctx context.Context, query ...mongoplus.QueryOption) ([]*model.EventEntity, error) {
+	return r.Repository.FindList(ctx, query...)
+}
+
+func (r *defaultEventRepository) FindListByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.EventEntity, error) {
+	return r.Repository.FindListByWrapper(ctx, fn, query...)
+}
+
+func (r *defaultEventRepository) FindPage(ctx context.Context, pageNumber, pageSize int64, query ...mongoplus.QueryOption) ([]*model.EventEntity, int64, error) {
+	return r.Repository.FindPage(ctx, pageNumber, pageSize, query...)
+}
+
+func (r *defaultEventRepository) FindPageByWrapper(ctx context.Context, pageNumber, pageSize int64, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) ([]*model.EventEntity, int64, error) {
+	return r.Repository.FindPageByWrapper(ctx, pageNumber, pageSize, fn, query...)
+}
+
+func (r *defaultEventRepository) FindById(ctx context.Context, id bson.ObjectID, query ...mongoplus.QueryOption) (*model.EventEntity, error) {
+	return r.Repository.FindById(ctx, id, query...)
+}
+
+func (r *defaultEventRepository) FindByIdList(ctx context.Context, ids []bson.ObjectID, query ...mongoplus.QueryOption) ([]*model.EventEntity, error) {
+	return r.Repository.FindByIdList(ctx, ids, query...)
+}
+
+func (r *defaultEventRepository) FindOne(ctx context.Context, query ...mongoplus.QueryOption) (*model.EventEntity, error) {
+	return r.Repository.FindOne(ctx, query...)
+}
+
+func (r *defaultEventRepository) FindOneWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (*model.EventEntity, error) {
+	return r.Repository.FindOneWrapper(ctx, fn, query...)
+}
+
+func (r *defaultEventRepository) Exists(ctx context.Context, query ...mongoplus.QueryOption) (bool, error) {
+	return r.Repository.Exists(ctx, query...)
+}
+
+func (r *defaultEventRepository) ExistsByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (bool, error) {
+	return r.Repository.ExistsByWrapper(ctx, fn, query...)
+}
+
+func (r *defaultEventRepository) Count(ctx context.Context, query ...mongoplus.QueryOption) (int64, error) {
+	return r.Repository.Count(ctx, query...)
+}
+
+func (r *defaultEventRepository) CountByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper), query ...mongoplus.QueryOption) (int64, error) {
+	return r.Repository.CountByWrapper(ctx, fn, query...)
+}
+
+func (r *defaultEventRepository) WithContext(ctx context.Context) *mongoplus.Aggregation {
+	return r.Repository.WithContext(ctx)
+}
+
+func (r *defaultEventRepository) FindCursorPage(ctx context.Context, after *bson.ObjectID, size int64, query ...mongoplus.QueryOption) (mongoplus.CursorPage[model.EventEntity, bson.ObjectID], error) {
+	return r.Repository.FindCursorPage(ctx, after, size, query...)
+}
+
+func (r *defaultEventRepository) Walk(ctx context.Context, fn func(*model.EventEntity) error, query ...mongoplus.QueryOption) error {
+	return r.Repository.Walk(ctx, fn, query...)
+}
+
+func (r *defaultEventRepository) RestoreById(ctx context.Context, id bson.ObjectID) (int64, error) {
+	return r.Repository.RestoreById(ctx, id)
+}
+
+func (r *defaultEventRepository) HardDeleteById(ctx context.Context, id bson.ObjectID) (int64, error) {
+	return r.Repository.HardDeleteById(ctx, id)
+}
+
+func (r *defaultEventRepository) HardDeleteByWrapper(ctx context.Context, fn func(*mongoplus.Wrapper)) (int64, error) {
+	return r.Repository.HardDeleteByWrapper(ctx, fn)
+}
+
+func (r *defaultEventRepository) Native() *mongo.Collection {
+	return r.Repository.Native()
+}
+
+// newDefaultEventRepository 使用默认连接或显式连接，以及生成时解析的集合配置。
+func newDefaultEventRepository(db ...*mongoplus.Database) *defaultEventRepository {
+	database := mongoplus.DefaultDB()
+	if len(db) > 0 {
+		database = db[0]
+	}
+	return &defaultEventRepository{Repository: mongoplus.MustRepository[model.EventEntity, bson.ObjectID](database, mongoplus.CollectionConfig{
 		Name: "events",
 		ID: mongoplus.IDConfig{
 			Type:       mongoplus.IDTypeObjectID,

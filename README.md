@@ -335,6 +335,8 @@ mongoplus schema apply --config mongo-plus.yml
 
 Entity、DAO、Repository、DTO、VO 的模板在 `generator/template`，生成时内嵌渲染，目录组织与 gorm-plus 的 `generator/template` 相同。
 
+两个 Repository 模板也沿用 gorm-plus 的职责划分：`repository_gen_template.txt` 显式生成 default 结构体、iDefault 接口、基础方法和底部构造函数；`repository_template.txt` 生成 customer 结构体、对外接口、接口检查及公开构造函数。基础读写统一委托给公共 MongoDB 执行器。自定义方法写在 customer 结构体上，并在对外接口中声明；覆盖基础方法时保持相同签名。
+
 生成目录：
 
 ```text

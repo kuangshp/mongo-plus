@@ -4,14 +4,16 @@ import (
 	mongoplus "github.com/kuangshp/mongo-plus"
 )
 
-// UserRepository 是业务扩展接口；此文件首次创建后不再覆盖。
-// 基础读写在 iDefaultUserRepository。自定义查询加在 customerUserRepository 上。
-type UserRepository interface {
-	iDefaultUserRepository
-}
-
+// customerUserRepository 是业务自定义仓储；此文件首次创建后不再覆盖。
+// 自定义方法写在此结构体上；覆盖基础方法时保持相同的方法签名。
 type customerUserRepository struct {
 	*defaultUserRepository
+}
+
+// UserRepository 对外暴露基础能力与业务扩展方法。
+// 新增自定义方法时在此接口声明。
+type UserRepository interface {
+	iDefaultUserRepository
 }
 
 var _ UserRepository = (*customerUserRepository)(nil)
@@ -19,11 +21,9 @@ var _ UserRepository = (*customerUserRepository)(nil)
 // NewUserRepository 创建仓储。
 // 不传连接时使用 mongoplus.Use 注册的默认数据库；传入连接时优先使用参数。
 func NewUserRepository(db ...*mongoplus.Database) UserRepository {
-	database := mongoplus.DefaultDB()
-	if len(db) > 0 {
-		database = db[0]
+	return &customerUserRepository{
+		defaultUserRepository: newDefaultUserRepository(db...),
 	}
-	return &customerUserRepository{newDefaultUserRepository(database)}
 }
 
 // 自定义查询示例。取消注释后补上 context 与 dao 的导入，再按实际字段调整 Like/WhereIf。
