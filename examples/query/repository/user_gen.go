@@ -7,6 +7,9 @@ import (
 )
 
 // iDefaultUserRepository 的基础方法签名随生成代码更新。
+// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
+// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
+// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
 type iDefaultUserRepository interface {
 	mongoplus.Contract[model.UserEntity, int64]
 }
@@ -18,5 +21,15 @@ type defaultUserRepository struct {
 
 // newDefaultUserRepository 使用生成时解析的全局/实体配置。
 func newDefaultUserRepository(db *mongoplus.Database) *defaultUserRepository {
-	return &defaultUserRepository{mongoplus.MustRepository[model.UserEntity, int64](db, mongoplus.CollectionConfig{Name: "users", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64, Generation: mongoplus.IDGenerationIncrement, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultUserRepository{Repository: mongoplus.MustRepository[model.UserEntity, int64](db, mongoplus.CollectionConfig{
+		Name: "users",
+		ID: mongoplus.IDConfig{
+			Type:       mongoplus.IDTypeInt64,
+			Generation: mongoplus.IDGenerationIncrement,
+			BlockSize:  0,
+		},
+		SoftDelete:  true,
+		Timestamps:  true,
+		TenantField: "",
+	})}
 }

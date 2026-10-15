@@ -1,0 +1,27 @@
+// iDefault{{.Name}}Repository 的基础方法签名随生成代码更新。
+// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
+// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
+// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
+type iDefault{{.Name}}Repository interface {
+	mongoplus.Contract[model.{{.Entity}}, {{.IDType}}]
+}
+
+// default{{.Name}}Repository 实现生成的基础仓储，业务扩展在同名非生成文件。
+type default{{.Name}}Repository struct {
+	*mongoplus.Repository[model.{{.Entity}}, {{.IDType}}]
+}
+
+// newDefault{{.Name}}Repository 使用生成时解析的全局/实体配置。
+func newDefault{{.Name}}Repository(db *mongoplus.Database) *default{{.Name}}Repository {
+	return &default{{.Name}}Repository{Repository: mongoplus.MustRepository[model.{{.Entity}}, {{.IDType}}](db, mongoplus.CollectionConfig{
+		Name: {{quote .Collection}},
+		ID: mongoplus.IDConfig{
+			Type:       mongoplus.{{.IDTypeConst}},
+			Generation: mongoplus.{{.IDGenConst}},
+			BlockSize:  {{.BlockSize}},
+		},
+		SoftDelete: {{.SoftDelete}},
+		Timestamps: {{.Timestamps}},
+		TenantField: {{quote .TenantField}},
+	})}
+}

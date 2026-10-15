@@ -331,6 +331,8 @@ mongoplus schema apply --config mongo-plus.yml
 
 数据库命令默认超时 60 秒，可以加 `--timeout 2m`。未知配置项、重复 JSON 键、重复字段、错误类型、索引冲突和保留字段冲突会明确报错。
 
+Entity、DAO、Repository、DTO、VO 的模板在 `generator/template`，生成时内嵌渲染，目录组织与 gorm-plus 的 `generator/template` 相同。
+
 生成目录：
 
 ```text

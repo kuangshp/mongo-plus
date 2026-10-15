@@ -27,7 +27,14 @@ type QueryOption struct {
 }
 
 // Wrapper 是每次查询新建的条件构造器，不应在 goroutine 间共享。
-type Wrapper struct{ option QueryOption }
+type Wrapper struct {
+	option          QueryOption
+	defaultOrders   bson.D
+	singleFlightTTL time.Duration
+}
+
+// QueryOptionBuilder 沿用 gorm-plus 的查询选项构造器名称。
+type QueryOptionBuilder = Wrapper
 
 // Query 创建条件构造器。
 func Query() *Wrapper { return &Wrapper{} }
@@ -62,16 +69,14 @@ func (w *Wrapper) WhereGroupIf(ok bool, conditions ...Condition) *Wrapper {
 	return w
 }
 
-// OrWhereIf 将目前的业务条件与新条件合并为 OR；仓储的租户/删除条件仍在外层 AND。
+// OrWhereIf 以 OR 逐个追加条件；仓储的租户/删除条件仍在外层 AND。
 func (w *Wrapper) OrWhereIf(ok bool, conditions ...Condition) *Wrapper {
 	if !ok {
 		return w
 	}
-	if len(w.option.conditions) == 0 {
-		return w.Where(conditions...)
+	for _, condition := range conditions {
+		w.orCondition(condition)
 	}
-	previous := field.And(w.option.conditions...)
-	w.option.conditions = []Condition{field.Or(previous, field.And(conditions...))}
 	return w
 }
 
@@ -93,15 +98,30 @@ func (w *Wrapper) RawWhere(filter bson.D) *Wrapper {
 	return w.Where(Condition{Document: filter})
 }
 
-// BetweenIfNotZero 按非零边界构造范围；包含零值的业务范围应显式使用 Gte/Lte。
+// BetweenIfNotZero 与 gorm-plus 一致：任一边界为零值时跳过整个范围。
+// 单边范围或包含零值的范围应显式使用 Gte/Lte。
 func (w *Wrapper) BetweenIfNotZero(f field.Named, min, max any) *Wrapper {
-	if min != nil && !reflect.ValueOf(min).IsZero() {
-		w.Where(field.New[any](f.Name()).Gte(min))
+	if f == nil || isZeroValue(min) || isZeroValue(max) {
+		return w
 	}
-	if max != nil && !reflect.ValueOf(max).IsZero() {
-		w.Where(field.New[any](f.Name()).Lte(max))
+	return w.Where(field.New[any](f.Name()).Gte(min), field.New[any](f.Name()).Lte(max))
+}
+
+func isZeroValue(value any) bool {
+	if value == nil {
+		return true
 	}
-	return w
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		if v.IsNil() {
+			return true
+		}
+	}
+	if zero, ok := value.(interface{ IsZero() bool }); ok {
+		return zero.IsZero()
+	}
+	return v.IsZero()
 }
 
 // Like 按字面量包含匹配；空文本自动跳过。
@@ -180,8 +200,14 @@ func (w *Wrapper) AllowAll() *Wrapper { w.option.allowAll = true; return w }
 // Build 返回独立的选项切片副本，继续构造不会改变此前快照。
 func (w *Wrapper) Build() QueryOption {
 	o := w.option
+	if o.cacheTTL == 0 {
+		o.cacheTTL = w.singleFlightTTL
+	}
 	o.conditions = append([]Condition(nil), o.conditions...)
 	o.sort = append(bson.D(nil), o.sort...)
+	if len(o.sort) == 0 {
+		o.sort = append(bson.D(nil), w.defaultOrders...)
+	}
 	o.projection = append(bson.D(nil), o.projection...)
 	return o
 }
@@ -323,5 +349,20 @@ func stringsOverlap(a, b string) bool {
 // WithCache 为当前查询启用有界本机 TTL 缓存，写操作自动失效。
 func (w *Wrapper) WithCache(ttl time.Duration) *Wrapper { w.option.cacheTTL = ttl; return w }
 
-// WithSingleFlight 仅合并同时进行的相同查询，不缓存结果。
-func (w *Wrapper) WithSingleFlight() *Wrapper { w.option.singleFlight = true; return w }
+// WithSingleFlight 合并相同的并发查询；省略 TTL 或传 0 时不缓存。
+// 正 TTL 与 WithCache 等价，兼容 gorm-plus.WithSingleFlight(ttl) 的用法。
+func (w *Wrapper) WithSingleFlight(ttl ...time.Duration) *Wrapper {
+	w.option.singleFlight = true
+	if len(ttl) > 1 {
+		w.option.err = fmt.Errorf("WithSingleFlight 最多接受一个 TTL")
+	}
+	if len(ttl) == 1 {
+		w.singleFlightTTL = ttl[0]
+	} else if len(ttl) == 0 {
+		w.singleFlightTTL = 0
+	}
+	if w.singleFlightTTL < 0 {
+		w.option.err = fmt.Errorf("SingleFlight TTL 不能为负数")
+	}
+	return w
+}

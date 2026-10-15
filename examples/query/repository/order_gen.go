@@ -7,6 +7,9 @@ import (
 )
 
 // iDefaultOrderRepository 的基础方法签名随生成代码更新。
+// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
+// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
+// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
 type iDefaultOrderRepository interface {
 	mongoplus.Contract[model.OrderEntity, int64]
 }
@@ -18,5 +21,15 @@ type defaultOrderRepository struct {
 
 // newDefaultOrderRepository 使用生成时解析的全局/实体配置。
 func newDefaultOrderRepository(db *mongoplus.Database) *defaultOrderRepository {
-	return &defaultOrderRepository{mongoplus.MustRepository[model.OrderEntity, int64](db, mongoplus.CollectionConfig{Name: "orders", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64, Generation: mongoplus.IDGenerationIncrement, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultOrderRepository{Repository: mongoplus.MustRepository[model.OrderEntity, int64](db, mongoplus.CollectionConfig{
+		Name: "orders",
+		ID: mongoplus.IDConfig{
+			Type:       mongoplus.IDTypeInt64,
+			Generation: mongoplus.IDGenerationIncrement,
+			BlockSize:  0,
+		},
+		SoftDelete:  true,
+		Timestamps:  true,
+		TenantField: "",
+	})}
 }

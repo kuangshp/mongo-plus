@@ -7,6 +7,9 @@ import (
 )
 
 // iDefaultTokenRepository 的基础方法签名随生成代码更新。
+// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
+// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
+// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
 type iDefaultTokenRepository interface {
 	mongoplus.Contract[model.TokenEntity, string]
 }
@@ -18,5 +21,15 @@ type defaultTokenRepository struct {
 
 // newDefaultTokenRepository 使用生成时解析的全局/实体配置。
 func newDefaultTokenRepository(db *mongoplus.Database) *defaultTokenRepository {
-	return &defaultTokenRepository{mongoplus.MustRepository[model.TokenEntity, string](db, mongoplus.CollectionConfig{Name: "tokens", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeString, Generation: mongoplus.IDGenerationManual, BlockSize: 0}, SoftDelete: false, Timestamps: false, TenantField: ""})}
+	return &defaultTokenRepository{Repository: mongoplus.MustRepository[model.TokenEntity, string](db, mongoplus.CollectionConfig{
+		Name: "tokens",
+		ID: mongoplus.IDConfig{
+			Type:       mongoplus.IDTypeString,
+			Generation: mongoplus.IDGenerationManual,
+			BlockSize:  0,
+		},
+		SoftDelete:  false,
+		Timestamps:  false,
+		TenantField: "",
+	})}
 }

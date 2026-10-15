@@ -1,0 +1,6 @@
+// {{.Name}} {{.Comment}}查询结果；可用 Scan/ScanByPage 直接填充，按需裁剪敏感字段。
+type {{.Name}} struct {
+{{- range .Fields}}
+	{{.GoName}} {{.GoType}} `bson:{{quote .BSON}} json:{{quote .JSON}}` // {{.Comment}}
+{{- end}}
+}

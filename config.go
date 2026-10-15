@@ -113,16 +113,20 @@ type actorKey struct{}
 
 // WithTenant 为请求上下文设置租户；仓储从上下文读取，业务过滤不能覆盖它。
 func WithTenant(ctx context.Context, id any) context.Context {
-	return context.WithValue(ctx, tenantKey{}, id)
+	return context.WithValue(resolveContext(ctx), tenantKey{}, id)
 }
 
 // WithActor 设置审计操作人。
 func WithActor(ctx context.Context, id any) context.Context {
-	return context.WithValue(ctx, actorKey{}, id)
+	return context.WithValue(resolveContext(ctx), actorKey{}, id)
 }
 
 // Transaction 执行官方 Session 事务；回调必须使用 txCtx，且可能被驱动重试。
 func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Context) error) error {
+	ctx = resolveContext(ctx)
+	if db == nil || db.native == nil || fn == nil {
+		return fmt.Errorf("事务数据库和回调不能为空")
+	}
 	if mongo.SessionFromContext(ctx) != nil {
 		return fmt.Errorf("不支持嵌套 Session 事务")
 	}
@@ -144,6 +148,9 @@ func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Contex
 
 // TransactionAs 在事务中构建业务项目自己的仓储集合，保持与 gorm-plus 类似的用法。
 func TransactionAs[Q any](ctx context.Context, db *Database, use func(context.Context) Q, fn func(Q) error) error {
+	if use == nil || fn == nil {
+		return fmt.Errorf("事务仓储构造函数和回调不能为空")
+	}
 	return Transaction(ctx, db, func(txCtx context.Context) error { return fn(use(txCtx)) })
 }
 

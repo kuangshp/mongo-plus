@@ -1,0 +1,10 @@
+// {{.Name}} 是 {{.Comment}} 的 BSON 查询字段。
+var {{.Name}} = struct {
+{{- range .Fields}}
+	{{.Name}} {{.Type}}
+{{- end}}
+}{
+{{- range .Fields}}
+	{{.Name}}: {{.Constructor}}({{quote .Path}}),
+{{- end}}
+}

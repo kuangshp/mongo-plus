@@ -54,7 +54,7 @@ func (q *Aggregation) WithContext(ctx context.Context) *Aggregation {
 		return nil
 	}
 	copy := *q
-	copy.ctx = ctx
+	copy.ctx = resolveContext(ctx)
 	copy.steps = append([]joinStep(nil), q.steps...)
 	for i := range copy.steps {
 		if group := copy.steps[i].group; group != nil {
@@ -158,6 +158,7 @@ func (q *Aggregation) OnlyDeleted() *Aggregation { q.option.deleted = 2; return 
 
 // Build 返回带完整隔离条件的聚合管道，用于调试或显式原生执行。
 func (q *Aggregation) Build(ctx context.Context) (mongo.Pipeline, error) {
+	ctx = resolveContext(ctx)
 	base, _, err := q.buildBase(ctx, false)
 	if err != nil {
 		return nil, err
@@ -571,6 +572,7 @@ func scanDestination(dest any) (reflect.Value, error) {
 }
 
 func (q *Aggregation) scan(ctx context.Context, dest any) (err error) {
+	ctx = resolveContext(ctx)
 	end := q.observe(ctx, "Scan")
 	defer func() { end(err) }()
 	value, err := scanDestination(dest)
@@ -598,6 +600,7 @@ type aggregatePageCount struct {
 }
 
 func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64) (total int64, err error) {
+	ctx = resolveContext(ctx)
 	end := q.observe(ctx, "ScanByPage")
 	defer func() { end(err) }()
 	value, err := scanDestination(dest)

@@ -64,7 +64,8 @@ func TestGeneratedCodeAndPreservedExtensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	generatedRepo, readErr := os.ReadFile(filepath.Join(c.RepoPath, "user_gen.go"))
-	if readErr != nil || !strings.Contains(string(generatedRepo), "BlockSize: 100") {
+	compact := strings.Join(strings.Fields(string(generatedRepo)), "")
+	if readErr != nil || !strings.Contains(compact, "BlockSize:100") {
 		t.Fatalf("生成仓储丢失预分配配置: %v\n%s", readErr, generatedRepo)
 	}
 	before := map[string]string{}

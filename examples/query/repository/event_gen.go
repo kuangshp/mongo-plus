@@ -8,6 +8,9 @@ import (
 )
 
 // iDefaultEventRepository 的基础方法签名随生成代码更新。
+// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
+// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
+// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
 type iDefaultEventRepository interface {
 	mongoplus.Contract[model.EventEntity, bson.ObjectID]
 }
@@ -19,5 +22,15 @@ type defaultEventRepository struct {
 
 // newDefaultEventRepository 使用生成时解析的全局/实体配置。
 func newDefaultEventRepository(db *mongoplus.Database) *defaultEventRepository {
-	return &defaultEventRepository{mongoplus.MustRepository[model.EventEntity, bson.ObjectID](db, mongoplus.CollectionConfig{Name: "events", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeObjectID, Generation: mongoplus.IDGenerationAuto, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultEventRepository{Repository: mongoplus.MustRepository[model.EventEntity, bson.ObjectID](db, mongoplus.CollectionConfig{
+		Name: "events",
+		ID: mongoplus.IDConfig{
+			Type:       mongoplus.IDTypeObjectID,
+			Generation: mongoplus.IDGenerationAuto,
+			BlockSize:  0,
+		},
+		SoftDelete:  true,
+		Timestamps:  true,
+		TenantField: "",
+	})}
 }

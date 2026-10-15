@@ -1,0 +1,15 @@
+// {{.Name}} {{.Comment}}
+type {{.Name}} struct {
+{{- range .Fields}}
+	{{.GoName}} {{.GoType}} `bson:{{quote .BSON}} json:{{quote .JSON}}` // {{.Comment}}
+{{- end}}
+}
+{{- range .Nested}}
+
+// {{.Name}} {{.Comment}}。
+type {{.Name}} struct {
+{{- range .Fields}}
+	{{.GoName}} {{.GoType}} `bson:{{quote .BSON}} json:{{quote .JSON}}` // {{.Comment}}
+{{- end}}
+}
+{{- end}}

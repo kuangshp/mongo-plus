@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/kuangshp/mongo-plus/schema"
@@ -133,100 +132,40 @@ func writeAtomic(path string, data []byte) error {
 }
 
 func render(e schema.Entity, modelImport string, c schema.Config) (model, dao, repo, extension []byte, err error) {
-	root := e.Entity
-	fields := effectiveFields(e)
-	var models strings.Builder
-	fmt.Fprintf(&models, "// %s %s\ntype %s struct {\n", root, comment(e.Comment), root)
-	for _, f := range fields {
-		typ := goType(f, root+f.GoName)
-		bsonName := f.Name
-		if f.Name == "_id" || (!f.Required && !f.Nullable && (strings.HasPrefix(f.Type, "[]") || f.Type == "json" || f.Type == "bytes")) {
-			bsonName += ",omitempty"
-		}
-		jsonName := f.Name
-		if f.Name == "_id" {
-			jsonName = "id"
-		}
-		fmt.Fprintf(&models, "%s %s `bson:%s json:%s` // %s\n", f.GoName, typ, strconv.Quote(bsonName), strconv.Quote(jsonName), comment(f.Comment))
-	}
-	models.WriteString("}\n")
-	for _, f := range fields {
-		renderNested(&models, f, root+f.GoName)
-	}
-	model, err = source(c.PackageName("model"), models.String(), nil)
+	body, err := executeTemplate("entity_template.txt", entityData(e))
 	if err != nil {
 		return
 	}
-	type daoField struct{ name, path, typ, constructor string }
-	all := []daoField{}
-	names := map[string]bool{}
-	var add func(schema.Field, string, string, string) error
-	add = func(f schema.Field, name, path, nested string) error {
-		if names[name] {
-			return fmt.Errorf("DAO 字段名称冲突: %s", name)
-		}
-		names[name] = true
-		typ := goType(f, nested)
-		if f.NativeGoType == "" && strings.Contains(typ, root) {
-			typ = strings.ReplaceAll(typ, root, "model."+root)
-		}
-		var ft, ctor string
-		switch {
-		case f.Type == "string" && !f.Nullable && f.NativeGoType == "":
-			ft = "field.String"
-			ctor = "field.NewString"
-		case (f.Type == "int32" || f.Type == "int64" || f.Type == "float64") && !f.Nullable:
-			ft = "field.Numeric[" + typ + "]"
-			ctor = "field.NewNumeric[" + typ + "]"
-		case strings.HasPrefix(f.Type, "[]") && strings.HasPrefix(typ, "[]") && !f.Nullable:
-			ft = "field.Array[" + strings.TrimPrefix(typ, "[]") + "]"
-			ctor = "field.NewArray[" + strings.TrimPrefix(typ, "[]") + "]"
-		default:
-			ft = "field.Field[" + typ + "]"
-			ctor = "field.New[" + typ + "]"
-		}
-		all = append(all, daoField{name, path, ft, ctor})
-		for _, child := range f.Fields {
-			if err := add(child, name+child.GoName, path+"."+child.Name, nested+child.GoName); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	for _, f := range fields {
-		if err = add(f, f.GoName, f.Name, root+f.GoName); err != nil {
-			return
-		}
-	}
-	var daos strings.Builder
-	fmt.Fprintf(&daos, "// %s 是 %s 的 BSON 查询字段。\nvar %s = struct {\n", root, comment(e.Comment), root)
-	for _, f := range all {
-		fmt.Fprintf(&daos, "%s %s\n", f.name, f.typ)
-	}
-	daos.WriteString("}{\n")
-	for _, f := range all {
-		fmt.Fprintf(&daos, "%s: %s(%q),\n", f.name, f.constructor, f.path)
-	}
-	daos.WriteString("}\n")
-	dao, err = source(c.PackageName("dao"), daos.String(), map[string]string{"field": "github.com/kuangshp/mongo-plus/field", "model": modelImport})
+	model, err = source(c.PackageName("model"), body, nil)
 	if err != nil {
 		return
 	}
-	var repos strings.Builder
-	name := strings.TrimSuffix(root, "Entity")
-	idType := goScalar(string(e.ID.Type))
-	fmt.Fprintf(&repos, "// iDefault%sRepository 的基础方法签名随生成代码更新。\ntype iDefault%sRepository interface { mongoplus.Contract[model.%s,%s] }\n", name, name, root, idType)
-	fmt.Fprintf(&repos, "// default%sRepository 实现生成的基础仓储，业务扩展在同名非生成文件。\ntype default%sRepository struct {\n *mongoplus.Repository[model.%s, %s]\n}\n", name, name, root, idType)
-	typeConstant := map[string]string{"objectId": "IDTypeObjectID", "int64": "IDTypeInt64", "string": "IDTypeString"}[string(e.ID.Type)]
-	generationConstant := map[string]string{"auto": "IDGenerationAuto", "increment": "IDGenerationIncrement", "manual": "IDGenerationManual"}[string(e.ID.Generation)]
-	fmt.Fprintf(&repos, "// newDefault%sRepository 使用生成时解析的全局/实体配置。\nfunc newDefault%sRepository(db *mongoplus.Database) *default%sRepository {\n return &default%sRepository{mongoplus.MustRepository[model.%s,%s](db,mongoplus.CollectionConfig{Name:%q,ID:mongoplus.IDConfig{Type:mongoplus.%s,Generation:mongoplus.%s,BlockSize:%d},SoftDelete:%t,Timestamps:%t,TenantField:%q})}\n}\n", name, name, name, name, root, idType, e.Collection, typeConstant, generationConstant, e.ID.BlockSize, *e.SoftDelete, *e.Timestamps, e.Runtime().TenantField)
-	repo, err = source(c.PackageName("repository"), repos.String(), map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
+	fields, err := daoData(e)
 	if err != nil {
 		return
 	}
-	// 将接口的泛型基础方法集中维护在运行时 Contract，避免生成文件反复复制方法签名。
-	ext := fmt.Sprintf("// %[1]sRepository 是业务扩展接口；此文件首次创建后不再覆盖。\ntype %[1]sRepository interface {\n iDefault%[1]sRepository\n}\n\ntype custom%[1]sRepository struct { *default%[1]sRepository }\n\nvar _ %[1]sRepository = (*custom%[1]sRepository)(nil)\n\n// New%[1]sRepository 创建仓储并复用传入的数据库连接。\nfunc New%[1]sRepository(db *mongoplus.Database) %[1]sRepository {\n return &custom%[1]sRepository{newDefault%[1]sRepository(db)}\n}\n", name)
-	extension, err = source(c.PackageName("repository"), ext, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
+	body, err = executeTemplate("dao_template.txt", fields)
+	if err != nil {
+		return
+	}
+	dao, err = source(c.PackageName("dao"), body, map[string]string{"field": "github.com/kuangshp/mongo-plus/field", "model": modelImport})
+	if err != nil {
+		return
+	}
+	view := repositoryData(e)
+	body, err = executeTemplate("repository_gen_template.txt", view)
+	if err != nil {
+		return
+	}
+	repo, err = source(c.PackageName("repository"), body, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
+	if err != nil {
+		return
+	}
+	body, err = executeTemplate("repository_template.txt", view)
+	if err != nil {
+		return
+	}
+	extension, err = source(c.PackageName("repository"), body, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
 	if err == nil {
 		extension = bytes.Replace(extension, []byte(generated), nil, 1)
 	}
@@ -280,20 +219,6 @@ func goType(f schema.Field, nested string) string {
 		typ = "*" + typ
 	}
 	return typ
-}
-
-func renderNested(out *strings.Builder, f schema.Field, name string) {
-	if strings.TrimPrefix(f.Type, "[]") != "object" {
-		return
-	}
-	fmt.Fprintf(out, "// %s %s。\ntype %s struct {\n", name, comment(f.Comment), name)
-	for _, child := range f.Fields {
-		fmt.Fprintf(out, "%s %s `bson:%s json:%s` // %s\n", child.GoName, goType(child, name+child.GoName), strconv.Quote(child.Name), strconv.Quote(child.Name), comment(child.Comment))
-	}
-	out.WriteString("}\n")
-	for _, child := range f.Fields {
-		renderNested(out, child, name+child.GoName)
-	}
 }
 
 func comment(value string) string { return strings.NewReplacer("\r", " ", "\n", " ").Replace(value) }

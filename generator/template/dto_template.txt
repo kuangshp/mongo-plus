@@ -1,0 +1,23 @@
+{{- range .Blocks}}
+{{template "dtoBlock" .}}
+{{- end}}
+
+{{- define "dtoBlock"}}
+// {{.Name}} {{.Doc}}
+type {{.Name}} struct {
+{{- range .Fields}}
+	{{.GoName}} {{.GoType}} `json:{{quote .JSON}} validate:{{quote .Rules}} binding:{{quote .Rules}}` // {{.Comment}}
+{{- end}}
+}
+{{- if .Decode}}
+
+// UnmarshalJSON 兼容数字和数字字符串，保留数值原文。
+func (value *{{.Name}}) UnmarshalJSON(data []byte) error {
+	type plain {{.Name}}
+	return decimaljson.Unmarshal(data, (*plain)(value))
+}
+{{- end}}
+{{- range .Nested}}
+{{template "dtoBlock" .}}
+{{- end}}
+{{- end}}

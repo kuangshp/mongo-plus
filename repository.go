@@ -199,6 +199,7 @@ func (r *Repository[T, K]) findList(ctx context.Context, opts ...QueryOption) (e
 
 // Walk 按批次读取文档，避免将整个集合载入内存；回调错误会停止读取。
 func (r *Repository[T, K]) Walk(ctx context.Context, fn func(*T) error, opts ...QueryOption) error {
+	ctx = resolveContext(ctx)
 	o := mergeOptions(opts)
 	filter, err := r.filter(ctx, o, false)
 	if err != nil {

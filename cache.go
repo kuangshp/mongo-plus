@@ -193,6 +193,7 @@ func (r *Repository[T, K]) readKey(ctx context.Context, opts []QueryOption) (Que
 
 // FindOne 获取单条记录，可通过 WithCache 或 WithSingleFlight 显式启用本机读优化。
 func (r *Repository[T, K]) FindOne(ctx context.Context, opts ...QueryOption) (*T, error) {
+	ctx = resolveContext(ctx)
 	o, key, err := r.readKey(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -202,6 +203,7 @@ func (r *Repository[T, K]) FindOne(ctx context.Context, opts ...QueryOption) (*T
 
 // FindList 获取列表；默认直接读取数据库。
 func (r *Repository[T, K]) FindList(ctx context.Context, opts ...QueryOption) ([]*T, error) {
+	ctx = resolveContext(ctx)
 	o, key, err := r.readKey(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -211,6 +213,7 @@ func (r *Repository[T, K]) FindList(ctx context.Context, opts ...QueryOption) ([
 
 // Count 统计记录；读缓存默认关闭。
 func (r *Repository[T, K]) Count(ctx context.Context, opts ...QueryOption) (int64, error) {
+	ctx = resolveContext(ctx)
 	o, key, err := r.readKey(ctx, opts)
 	if err != nil {
 		return 0, err
@@ -220,6 +223,7 @@ func (r *Repository[T, K]) Count(ctx context.Context, opts ...QueryOption) (int6
 
 // Exists 判断存在性；默认直接读取数据库。
 func (r *Repository[T, K]) Exists(ctx context.Context, opts ...QueryOption) (bool, error) {
+	ctx = resolveContext(ctx)
 	o, key, err := r.readKey(ctx, opts)
 	if err != nil {
 		return false, err

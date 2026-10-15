@@ -159,6 +159,7 @@ func (r *Repository[T, K]) createID(entity *T) (any, error) {
 
 // Create 新增实体；插入获得确认后回填主键和自动字段。
 func (r *Repository[T, K]) Create(ctx context.Context, entity *T) (err error) {
+	ctx = resolveContext(ctx)
 	end := r.observe(ctx, "Create")
 	defer func() { end(err) }()
 	if _, err = r.filter(ctx, QueryOption{}, false); err != nil {
@@ -196,6 +197,7 @@ const createBatchSize = 1000
 // CreateBatch 每块最多 1000 条，有序批量插入；每块只分配一次自增号码区间。
 // 非事务下可能部分成功；只回填已获确认的成功前缀。需整批回滚时使用 Transaction。
 func (r *Repository[T, K]) CreateBatch(ctx context.Context, entities []*T) (err error) {
+	ctx = resolveContext(ctx)
 	end := r.observe(ctx, "CreateBatch")
 	defer func() { end(err) }()
 	if len(entities) == 0 {

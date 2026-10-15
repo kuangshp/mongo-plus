@@ -7,6 +7,9 @@ import (
 )
 
 // iDefaultDepartmentRepository 的基础方法签名随生成代码更新。
+// 方法集来自 mongoplus.Contract：Create、CreateBatch、FindById、FindByIdList、FindOne、FindList、
+// FindPage、FindCursorPage、Walk、Count、Exists、UpdateById、UpdateByWrapper、DeleteById、
+// DeleteByWrapper、RestoreById、HardDeleteById、Native。实现留在公共包，避免每个实体复制一份。
 type iDefaultDepartmentRepository interface {
 	mongoplus.Contract[model.DepartmentEntity, int64]
 }
@@ -18,5 +21,15 @@ type defaultDepartmentRepository struct {
 
 // newDefaultDepartmentRepository 使用生成时解析的全局/实体配置。
 func newDefaultDepartmentRepository(db *mongoplus.Database) *defaultDepartmentRepository {
-	return &defaultDepartmentRepository{mongoplus.MustRepository[model.DepartmentEntity, int64](db, mongoplus.CollectionConfig{Name: "departments", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64, Generation: mongoplus.IDGenerationIncrement, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultDepartmentRepository{Repository: mongoplus.MustRepository[model.DepartmentEntity, int64](db, mongoplus.CollectionConfig{
+		Name: "departments",
+		ID: mongoplus.IDConfig{
+			Type:       mongoplus.IDTypeInt64,
+			Generation: mongoplus.IDGenerationIncrement,
+			BlockSize:  0,
+		},
+		SoftDelete:  true,
+		Timestamps:  true,
+		TenantField: "",
+	})}
 }
