@@ -15,7 +15,7 @@ import (
 )
 
 // Database 创建测试数据库；未显式提供 URI 时跳过真实数据库测试。
-func Database(t *testing.T) *mongo.Database {
+func Database(t testing.TB) *mongo.Database {
 	t.Helper()
 	uri := os.Getenv("MONGOPLUS_TEST_URI")
 	if uri == "" {

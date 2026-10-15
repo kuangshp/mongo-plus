@@ -8,8 +8,7 @@ repo_path: internal/dal/repository
 dto_path: internal/dal/dto
 vo_path: internal/dal/vo
 id:
-  type: int64
-  generation: increment
+  type: int64 # 默认自增；无需再配置 generation。
 softDelete: true
 timestamps: true
 # 可选：取消以下注释后，生成代码时先同步集合、校验器和索引。

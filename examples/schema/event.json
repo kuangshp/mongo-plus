@@ -1,6 +1,6 @@
 {
   "comment": "事件记录：覆盖全局主键为 ObjectID",
-  "id": {"type": "objectId", "generation": "auto"},
+  "id": {"type": "objectId"},
   "fields": [
     {"name": "message", "type": "string", "comment": "事件内容"}
   ]

@@ -19,5 +19,5 @@ type defaultEventRepository struct {
 
 // newDefaultEventRepository 使用生成时解析的全局/实体配置。
 func newDefaultEventRepository(db *mongoplus.Database) *defaultEventRepository {
-	return &defaultEventRepository{mongoplus.MustRepository[model.EventEntity, bson.ObjectID](db, mongoplus.CollectionConfig{Name: "events", ID: mongoplus.IDConfig{Type: "objectId", Generation: "auto"}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultEventRepository{mongoplus.MustRepository[model.EventEntity, bson.ObjectID](db, mongoplus.CollectionConfig{Name: "events", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeObjectID, Generation: mongoplus.IDGenerationAuto, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
 }

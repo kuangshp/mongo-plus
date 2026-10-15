@@ -26,7 +26,7 @@ func renderDTO(e schema.Entity, c schema.Config) ([]byte, error) {
 		fmt.Fprintf(&body, "// %s %s；修改 DTO 表示完整业务字段提交，不是 PATCH。\ntype %s struct {\n", root, comment(e.Comment), root)
 		// 自动主键由 Repository 填充；手动主键的新增请求也需要 ID。
 		if action == "Modify" || e.ID.Generation == "manual" {
-			id := schema.Field{Name: "id", GoName: "ID", Type: e.ID.Type, Required: true, Comment: "主键"}
+			id := schema.Field{Name: "id", GoName: "ID", Type: string(e.ID.Type), Required: true, Comment: "主键"}
 			renderDTOField(&body, id, root+"ID", true)
 		}
 		for _, f := range e.Fields {
@@ -90,7 +90,8 @@ func renderDTOField(out *strings.Builder, f schema.Field, nested string, id bool
 	case "decimal128":
 		note += "；数字文本，入库前用 bson.ParseDecimal128 解析并校验业务精度"
 	}
-	fmt.Fprintf(out, "%s %s `json:%s validate:%s` // %s\n", f.GoName, dtoType(f, nested, id), strconv.Quote(f.Name), strconv.Quote(rules), note)
+	// Gin 使用 binding；普通 Go/go-zero 使用 validate，两者共用同一份规则。
+	fmt.Fprintf(out, "%s %s `json:%s validate:%s binding:%s` // %s\n", f.GoName, dtoType(f, nested, id), strconv.Quote(f.Name), strconv.Quote(rules), strconv.Quote(rules), note)
 }
 
 func renderDTONested(out *strings.Builder, f schema.Field, name string) {

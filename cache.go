@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -14,9 +15,16 @@ import (
 )
 
 type cacheEntry struct {
-	data    []byte
+	value   any
+	bytes   int64
 	expires time.Time
 	scope   string
+}
+
+type cacheFlight[V any] struct {
+	value     *V
+	owner     *byte // 无法安全复制时，仅发起者可以使用原始结果。
+	cloneable bool
 }
 type readCache struct {
 	mu       sync.Mutex
@@ -24,6 +32,9 @@ type readCache struct {
 	epochs   map[string]uint64
 	group    singleflight.Group
 	disabled bool
+	bytes    int64
+	limits   CacheConfig
+	types    map[reflect.Type]uint64
 }
 
 // InvalidateCache 清除该 Database 包装器中指定集合的本机读缓存。
@@ -38,7 +49,7 @@ func (d *Database) InvalidateCache(collection string) {
 	c.epochs[collection]++
 	for key, entry := range c.entries {
 		if entry.scope == collection {
-			delete(c.entries, key)
+			c.remove(key)
 		}
 	}
 }
@@ -59,6 +70,7 @@ func (r *Repository[T, K]) invalidate(ctx context.Context) {
 		r.db.cache.mu.Lock()
 		r.db.cache.disabled = true
 		r.db.cache.entries = nil
+		r.db.cache.bytes = 0
 		r.db.cache.mu.Unlock()
 		return
 	}
@@ -73,74 +85,84 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 	c.mu.Lock()
 	epoch := c.epochs[scope]
 	disabled := c.disabled
+	if c.types == nil {
+		c.types = map[reflect.Type]uint64{}
+	}
+	typ := reflect.TypeOf((*V)(nil))
+	typeID, ok := c.types[typ]
+	if !ok {
+		typeID = uint64(len(c.types) + 1)
+		c.types[typ] = typeID
+	}
 	c.mu.Unlock()
 	if disabled {
 		return load()
 	}
 	encoded, err := bson.Marshal(key)
 	if err != nil {
-		var zero V
-		return zero, err
+		return load() // 缓存不能改变原生驱动支持的参数类型。
 	}
 	hash := sha256.Sum256(encoded)
-	cacheKey := fmt.Sprintf("%s/%d/%s/%s", scope, epoch, method, hex.EncodeToString(hash[:]))
-	decode := func(data []byte) (V, error) {
-		var envelope struct {
-			Value V `bson:"value"`
+	cacheKey := fmt.Sprintf("%s/%d/%s/%d/%s", scope, epoch, method, typeID, hex.EncodeToString(hash[:]))
+	decode := func(value any) (V, bool) {
+		typed, ok := value.(*V)
+		if !ok {
+			var zero V
+			return zero, false
 		}
-		err := bson.Unmarshal(data, &envelope)
-		return envelope.Value, err
+		copy, _, ok := copyCacheValue(*typed)
+		return copy, ok
 	}
 	if o.cacheTTL > 0 {
 		c.mu.Lock()
 		entry, ok := c.entries[cacheKey]
 		if ok && !time.Now().Before(entry.expires) {
-			delete(c.entries, cacheKey)
+			c.remove(cacheKey)
 			ok = false
 		}
 		c.mu.Unlock()
 		if ok {
-			if value, err := decode(entry.data); err == nil {
+			if value, ok := decode(entry.value); ok {
 				return value, nil
 			}
 		}
 	}
-	// singleflight 共享 BSON 字节，再为每个调用者反序列化，避免共享可变实体指针。
+	// singleflight 只共享内部快照，每个调用者都取得独立副本。
+	owner := new(byte)
 	result := c.group.DoChan(cacheKey, func() (any, error) {
 		value, err := load()
 		if err != nil {
 			return nil, err
 		}
-		data, err := bson.Marshal(struct {
-			Value V `bson:"value"`
-		}{value})
-		if err != nil {
-			return nil, err
+		snapshot, bytes, ok := copyCacheValue(value)
+		if !ok {
+			return cacheFlight[V]{value: &value, owner: owner}, nil
 		}
 		if o.cacheTTL > 0 {
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			if !c.disabled && c.epochs[scope] == epoch {
+			limits := c.limits.defaults()
+			if !c.disabled && c.epochs[scope] == epoch && bytes <= limits.MaxEntryBytes && bytes <= limits.MaxBytes {
 				if c.entries == nil {
 					c.entries = map[string]cacheEntry{}
 				}
-				if len(c.entries) >= 1024 {
-					for key, entry := range c.entries {
-						if time.Now().After(entry.expires) {
-							delete(c.entries, key)
-						}
+				for key, entry := range c.entries {
+					if time.Now().After(entry.expires) {
+						c.remove(key)
 					}
 				}
-				if len(c.entries) >= 1024 {
+				c.remove(cacheKey)
+				for len(c.entries) >= limits.MaxEntries || c.bytes+bytes > limits.MaxBytes {
 					for key := range c.entries {
-						delete(c.entries, key)
+						c.remove(key)
 						break
 					}
 				}
-				c.entries[cacheKey] = cacheEntry{data, time.Now().Add(o.cacheTTL), scope}
+				c.entries[cacheKey] = cacheEntry{value: &snapshot, bytes: bytes, expires: time.Now().Add(o.cacheTTL), scope: scope}
+				c.bytes += bytes
 			}
 		}
-		return data, nil
+		return cacheFlight[V]{value: &snapshot, cloneable: true}, nil
 	})
 	select {
 	case <-ctx.Done():
@@ -151,7 +173,15 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 			var zero V
 			return zero, result.Err
 		}
-		return decode(result.Val.([]byte))
+		flight := result.Val.(cacheFlight[V])
+		if flight.cloneable {
+			if value, ok := decode(flight.value); ok {
+				return value, nil
+			}
+		} else if flight.owner == owner {
+			return *flight.value, nil
+		}
+		return load()
 	}
 }
 

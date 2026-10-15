@@ -1,0 +1,57 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      MONGOPLUS_TEST_URI: mongodb://127.0.0.1:27017,127.0.0.1:27018,127.0.0.1:27019/?replicaSet=mongo-plus-test&retryWrites=true
+      MONGOPLUS_GIN_INTEGRATION: '1'
+      MONGOPLUS_GOCTL_INTEGRATION: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Install goctl
+        run: go install github.com/zeromicro/go-zero/tools/goctl@v1.10.2
+      - name: Start dedicated three-member MongoDB replica set
+        run: |
+          for port in 27017 27018 27019; do
+            docker run -d --name "mongo-plus-$port" --network host mongo:8.0 \
+              --port "$port" --replSet mongo-plus-test --bind_ip 127.0.0.1
+          done
+          for port in 27017 27018 27019; do
+            ready=false
+            for attempt in $(seq 1 60); do
+              if docker exec "mongo-plus-$port" mongosh --port "$port" --quiet --eval 'db.adminCommand({ping:1})'; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            test "$ready" = true
+          done
+          docker exec mongo-plus-27017 mongosh --port 27017 --quiet --eval \
+            'rs.initiate({_id:"mongo-plus-test",members:[{_id:0,host:"127.0.0.1:27017"},{_id:1,host:"127.0.0.1:27018"},{_id:2,host:"127.0.0.1:27019"}]})'
+      - name: Static checks and build
+        run: |
+          go vet ./...
+          go build ./...
+      - name: Security scan
+        run: make security
+      - name: Race and full integration tests
+        run: go test -race -count=1 -timeout=15m ./...
+      - name: Primary failover and transaction recovery
+        run: MONGOPLUS_FAILOVER_URI="$MONGOPLUS_TEST_URI" go test -race -count=1 -run '^TestReplicaSetFailover$' -timeout=2m .
+      - name: Stop test databases
+        if: always()
+        run: docker rm -f mongo-plus-27017 mongo-plus-27018 mongo-plus-27019

@@ -2,6 +2,8 @@ module github.com/kuangshp/mongo-plus
 
 go 1.25.5
 
+toolchain go1.26.9
+
 require (
 	github.com/go-playground/locales v0.14.1
 	github.com/go-playground/universal-translator v0.18.1

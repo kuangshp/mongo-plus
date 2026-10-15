@@ -1,4 +1,4 @@
-.PHONY: gen check test integration vet build schema-plan schema-apply example statistics-example
+.PHONY: gen check test integration vet build schema-plan schema-apply example statistics-example security bench
 
 # 所有命令默认在 mongo-plus 项目根目录运行，不需要先安装工具。
 # 从 YAML 读取配置；配置 mongodb 时先同步数据库，否则只生成文件。
@@ -35,3 +35,12 @@ example:
 # 订单分组、Decimal128 金额统计、数组展开；配置 YAML 数据源后先执行 gen。
 statistics-example:
 	go run ./examples/statistics
+
+# 使用项目 toolchain 的安全补丁版本；只扫描，不改业务依赖。
+security:
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+# 使用随机测试数据库，三次采样；不要指向业务生产实例。
+bench:
+	@test -n "$$MONGOPLUS_TEST_URI" || (echo '请设置 MONGOPLUS_TEST_URI'; exit 1)
+	go test -run '^$$' -bench BenchmarkRepository -benchmem -count=3 .

@@ -7,8 +7,8 @@ import (
 
 // CreateTokenDTO 业务传入字符串主键；不启用逻辑删除；修改 DTO 表示完整业务字段提交，不是 PATCH。
 type CreateTokenDTO struct {
-	ID    string `json:"id" validate:"required"`     // 主键
-	Value string `json:"value" validate:"omitempty"` // 业务内容
+	ID    string `json:"id" validate:"required" binding:"required"`      // 主键
+	Value string `json:"value" validate:"omitempty" binding:"omitempty"` // 业务内容
 }
 
 // UnmarshalJSON 兼容数字和数字字符串，保留数值原文。
@@ -19,8 +19,8 @@ func (value *CreateTokenDTO) UnmarshalJSON(data []byte) error {
 
 // ModifyTokenDTO 业务传入字符串主键；不启用逻辑删除；修改 DTO 表示完整业务字段提交，不是 PATCH。
 type ModifyTokenDTO struct {
-	ID    string `json:"id" validate:"required"`     // 主键
-	Value string `json:"value" validate:"omitempty"` // 业务内容
+	ID    string `json:"id" validate:"required" binding:"required"`      // 主键
+	Value string `json:"value" validate:"omitempty" binding:"omitempty"` // 业务内容
 }
 
 // UnmarshalJSON 兼容数字和数字字符串，保留数值原文。

@@ -48,6 +48,7 @@ func compileFixture(t *testing.T, dir string) {
 
 func TestGeneratedCodeAndPreservedExtensions(t *testing.T) {
 	c, dir := fixture(t)
+	c.ID.BlockSize = 100
 	definitions := map[string]string{
 		"user":   `{"fields":[{"name":"username","type":"string"},{"name":"status","type":"int64"},{"name":"profile","type":"object","fields":[{"name":"city","type":"string"}]},{"name":"items","type":"[]object","fields":[{"name":"price","type":"decimal128"}]},{"name":"tags","type":"[]string"},{"name":"extra","type":"json"},{"name":"enabled","type":"bool","nullable":true}]}`,
 		"event":  `{"id":{"type":"objectId"},"fields":[]}`,
@@ -61,6 +62,10 @@ func TestGeneratedCodeAndPreservedExtensions(t *testing.T) {
 	files, err := Generate(c)
 	if err != nil {
 		t.Fatal(err)
+	}
+	generatedRepo, readErr := os.ReadFile(filepath.Join(c.RepoPath, "user_gen.go"))
+	if readErr != nil || !strings.Contains(string(generatedRepo), "BlockSize: 100") {
+		t.Fatalf("生成仓储丢失预分配配置: %v\n%s", readErr, generatedRepo)
 	}
 	before := map[string]string{}
 	for _, file := range files {

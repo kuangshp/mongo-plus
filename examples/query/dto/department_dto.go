@@ -7,7 +7,7 @@ import (
 
 // CreateDepartmentDTO 部门；修改 DTO 表示完整业务字段提交，不是 PATCH。
 type CreateDepartmentDTO struct {
-	Name string `json:"name" validate:"required"` // 部门名称
+	Name string `json:"name" validate:"required" binding:"required"` // 部门名称
 }
 
 // UnmarshalJSON 兼容数字和数字字符串，保留数值原文。
@@ -18,8 +18,8 @@ func (value *CreateDepartmentDTO) UnmarshalJSON(data []byte) error {
 
 // ModifyDepartmentDTO 部门；修改 DTO 表示完整业务字段提交，不是 PATCH。
 type ModifyDepartmentDTO struct {
-	ID   int64  `json:"id" validate:"required"`   // 主键
-	Name string `json:"name" validate:"required"` // 部门名称
+	ID   int64  `json:"id" validate:"required" binding:"required"`   // 主键
+	Name string `json:"name" validate:"required" binding:"required"` // 部门名称
 }
 
 // UnmarshalJSON 兼容数字和数字字符串，保留数值原文。

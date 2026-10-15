@@ -51,10 +51,24 @@ func TestPublicGeneratorFromConsumerModule(t *testing.T) {
 		t.Fatal("不完整的 YAML 代码块")
 	}
 	configYAML = strings.ReplaceAll(configYAML, "example.com/shop", "example.com/consumer")
+	_, directBlock, ok := strings.Cut(string(document), "<!-- business-generator-go -->")
+	if !ok {
+		t.Fatal("缺少直接 Go 配置示例")
+	}
+	_, directBlock, ok = strings.Cut(directBlock, "```go\n")
+	if !ok {
+		t.Fatal("缺少直接 Go 配置代码块")
+	}
+	directCode, _, ok := strings.Cut(directBlock, "\n```")
+	if !ok {
+		t.Fatal("不完整的直接 Go 配置代码块")
+	}
+	directCode = strings.ReplaceAll(directCode, "example.com/shop", "example.com/consumer")
 	mod := fmt.Sprintf("module example.com/consumer\n\ngo 1.25.5\nrequire github.com/kuangshp/mongo-plus v0.0.0\nreplace github.com/kuangshp/mongo-plus => %q\n", root)
 	for name, data := range map[string]string{
 		"go.mod":              mod,
 		"generator.go":        code,
+		"generator-direct.go": directCode,
 		"mongo-plus.yml":      configYAML,
 		"schema/user.json":    `{"fields":[{"name":"username","type":"string","required":true}]}`,
 		"schema/event.json":   `{"id":{"type":"objectId"},"fields":[]}`,
@@ -80,6 +94,7 @@ func TestPublicGeneratorFromConsumerModule(t *testing.T) {
 	run("get", "github.com/kuangshp/mongo-plus@v0.0.0")
 	// 不配置 mongodb 时，普通命令直接生成，不依赖环境变量。
 	run("run", "generator.go")
+	run("run", "generator-direct.go")
 	for name, fragment := range map[string]string{
 		"internal/dal/entity/user_entity.go":     "package entity",
 		"internal/dal/dao/user_fields_gen.go":    "package dao",
@@ -130,13 +145,22 @@ func TestPublicGeneratorFromConsumerModule(t *testing.T) {
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("README 默认同步命令失败: %v\n%s", err, output)
 		}
-		for _, name := range []string{"user", "event", "sys_user"} {
-			names, err := db.ListCollectionNames(context.Background(), bson.M{"name": name})
-			if err != nil || len(names) != 1 {
-				t.Fatalf("README 未创建集合 %s: %v %v", name, names, err)
-			}
-			if count, err := db.Collection(name).CountDocuments(context.Background(), bson.D{}); err != nil || count != 0 {
-				t.Fatalf("README 同步写入了业务数据 %s: %d %v", name, count, err)
+		directDB := testutil.Database(t)
+		appYAML := fmt.Sprintf("Name: shop\nmongodb:\n  uri: %q\n  database: %q\n", uri, directDB.Name())
+		if err := os.WriteFile(filepath.Join(dir, "application.dev.yml"), []byte(appYAML), 0600); err != nil {
+			t.Fatal(err)
+		}
+		run("run", "generator-direct.go", "-config", "application.dev.yml")
+		for _, database := range []string{db.Name(), directDB.Name()} {
+			for _, name := range []string{"user", "event", "sys_user"} {
+				native := db.Client().Database(database)
+				names, err := native.ListCollectionNames(context.Background(), bson.M{"name": name})
+				if err != nil || len(names) != 1 {
+					t.Fatalf("README 未创建集合 %s: %v %v", name, names, err)
+				}
+				if count, err := native.Collection(name).CountDocuments(context.Background(), bson.D{}); err != nil || count != 0 {
+					t.Fatalf("README 同步写入了业务数据 %s: %d %v", name, count, err)
+				}
 			}
 		}
 	}
@@ -167,8 +191,8 @@ func TestPublicGeneratorConfigAndNilErrors(t *testing.T) {
 		t.Fatalf("共享配置类型不兼容 %+v %v", normalized, err)
 	}
 	// 手写 Entity 路线同样从公共包调用；不会再生成一份实体定义。
-	c.ID = mp.IDConfig{Type: "objectId", Generation: "auto"}
-	if err := mp.GenerateModels(c, mp.GeneratorModel{Value: manual.DocumentEntity{}, Collection: "documents", ID: &mp.IDConfig{Type: "int64", Generation: "increment"}}); err != nil {
+	c.ID = mp.IDConfig{Type: mp.IDTypeObjectID, Generation: mp.IDGenerationAuto}
+	if err := mp.GenerateModels(c, mp.GeneratorModel{Value: manual.DocumentEntity{}, Collection: "documents", ID: &mp.IDConfig{Type: mp.IDTypeInt64, Generation: mp.IDGenerationIncrement}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(c.ModelPkgPath, "document_entity.go")); !os.IsNotExist(err) {

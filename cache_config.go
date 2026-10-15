@@ -1,0 +1,48 @@
+package mongoplus
+
+import "fmt"
+
+// CacheConfig 限制本机 TTL 缓存；零值使用默认值，不会自动开启查询缓存。
+// 字节数按保留的 Go 对象保守估算，不是进程内存的硬上限。
+type CacheConfig struct {
+	MaxEntries    int   // 默认 1024 条结果。
+	MaxBytes      int64 // 默认 64 MiB。
+	MaxEntryBytes int64 // 默认单条结果 1 MiB；超出时仍正常返回查询结果。
+}
+
+func (c CacheConfig) defaults() CacheConfig {
+	if c.MaxEntries == 0 {
+		c.MaxEntries = 1024
+	}
+	if c.MaxBytes == 0 {
+		c.MaxBytes = 64 << 20
+	}
+	if c.MaxEntryBytes == 0 {
+		c.MaxEntryBytes = min(1<<20, c.MaxBytes)
+	}
+	return c
+}
+
+// ConfigureCache 配置容量并清空已有缓存；建议在启动时调用。
+func (d *Database) ConfigureCache(limits CacheConfig) error {
+	if limits.MaxEntries < 0 || limits.MaxBytes < 0 || limits.MaxEntryBytes < 0 {
+		return fmt.Errorf("缓存容量不能为负数")
+	}
+	limits = limits.defaults()
+	if limits.MaxEntryBytes > limits.MaxBytes {
+		return fmt.Errorf("单条缓存容量不能超过总容量")
+	}
+	d.cache.mu.Lock()
+	defer d.cache.mu.Unlock()
+	d.cache.limits = limits
+	d.cache.entries = nil
+	d.cache.bytes = 0
+	return nil
+}
+
+func (c *readCache) remove(key string) {
+	if entry, ok := c.entries[key]; ok {
+		c.bytes -= entry.bytes
+		delete(c.entries, key)
+	}
+}

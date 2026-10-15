@@ -2,49 +2,120 @@
 
 基于 `go.mongodb.org/mongo-driver/v2` 的 Go 数据访问库。沿用 gorm-plus 的类型安全字段、Repository、可选条件和分页使用习惯，支持 JSON 定义生成、手写 Entity、全局主键配置、逻辑删除、关联查询与链式聚合统计。
 
-数据层不依赖 GORM、gorm-plus、go-utils、Gin 或 go-zero。可选的 go-zero 内嵌模板包含参数校验、统一响应、CORS、静态文件、日志和 Swagger；生成的 HTTP 服务使用 go-zero。当前固定官方驱动 v2.9.2，要求 Go 1.25.5 或更高版本。
+数据层不依赖 GORM、gorm-plus、go-utils、Gin 或 go-zero。可选的 go-zero 内嵌模板包含参数校验、统一响应、CORS、静态文件、日志和 Swagger；生成的 HTTP 服务使用 go-zero。当前固定官方驱动 v2.9.2，最低要求 Go 1.25.5；本仓库通过 toolchain 使用 Go 1.26.9 安全补丁版本。业务项目也应使用受支持且已修复漏洞的 Go 工具链，依赖库的 toolchain 不会强制升级业务项目的构建环境。
 
 ## 作为公共包使用
 
-业务项目通过 `github.com/kuangshp/mongo-plus` 导入公共包，在项目根目录放置 `generator.go`，执行 `go run generator.go` 即可生成代码，使用方式与 gorm-plus 一致。推荐使用 YAML 管理生成配置和可选数据源；生成代码不要求安装 CLI，也支持直接在 Go 中构造配置。
+业务项目通过 `github.com/kuangshp/mongo-plus` 导入公共包，在项目根目录放置 `generator.go`，执行 `go run generator.go` 即可生成代码，使用方式与 gorm-plus 一致。可以直接在 Go 中配置生成目录、主键等参数，也可以将完整生成配置放进 YAML。数据源可选，生成代码不要求安装 CLI。
 
-发布版本后，在业务项目中安装依赖：
+在业务项目中安装依赖：
 
 ```bash
 go get github.com/kuangshp/mongo-plus@latest
 ```
 
-当前源码尚未发布版本，本地验证可以添加 replace（假设两个项目同级）：
-
-```bash
-go mod edit -replace=github.com/kuangshp/mongo-plus=../mongo-plus
-go get github.com/kuangshp/mongo-plus@v0.0.0
-```
-
-创建下面的 generator.go 后运行 `go run generator.go`，生成后再执行 `go mod tidy`。发布后删除本地 replace 并使用实际版本；业务项目不需要复制本库的实现源码。
-
-## 快速体验
-
-在本项目根目录执行：
-
-```bash
-# 默认示例将 mongodb 注释，可先离线生成代码。
-make check
-make gen
-
-# 需要真实数据库时，在 examples/mongo-plus.yaml 中填写 mongodb 后再执行：
-make gen # 这次会先同步集合、索引和校验器。
-make example
-make statistics-example # 订单分组、金额统计、数组展开。
-```
-
-示例继承全局 int64 自增主键；`event.json` 覆盖为 ObjectID，`token.json` 覆盖为手动字符串主键和物理删除。
-
-CLI 是可选工具，主要用于 goctl 模板、Swagger 和显式 schema plan/apply。在本库根目录可执行 `go install ./cmd/mongoplus` 安装当前源码。
+下面两种方式任选一种，业务项目根目录均使用 generator.go 作为入口，执行 `go run generator.go`、`go mod tidy`，再通过生成的 Repository 访问数据库。
 
 ## 1. 全局配置一次，实体按需覆盖
 
-### 根目录 generator.go（推荐）
+### 方式一：直接在 generator.go 配置（常用）
+
+生成目录、主键和逻辑删除等参数直接写在 Go 中；数据源可从项目已有的业务 YAML 读取。下面是完整的 generator.go：
+
+<!-- business-generator-go -->
+```go
+//go:build ignore
+
+// 在业务项目根目录运行：go run generator.go。
+package main
+
+import (
+    "flag"
+    "log"
+    "os"
+
+    mongoplus "github.com/kuangshp/mongo-plus"
+    "gopkg.in/yaml.v3"
+)
+
+func main() {
+    configFile := flag.String("config", "", "可选：包含 mongodb 数据源的业务 YAML")
+    flag.Parse()
+    var mongoConfig mongoplus.Config
+    if *configFile != "" {
+        data, err := os.ReadFile(*configFile)
+        if err != nil { log.Fatal(err) }
+        var app struct {
+            MongoDB *mongoplus.Config `yaml:"mongodb"`
+        }
+        if err := yaml.Unmarshal(data, &app); err != nil { log.Fatal(err) }
+        if app.MongoDB != nil {
+            if app.MongoDB.URI == "" || app.MongoDB.Database == "" {
+                log.Fatal("mongodb 的 uri、database 不能为空")
+            }
+            mongoConfig = *app.MongoDB
+        }
+    }
+    cfg := &mongoplus.GeneratorConfig{
+        Package:      "example.com/shop",        // 与业务 go.mod 的 module 一致。
+        SchemaDir:    "schema",                  // JSON 实体定义目录。
+        ModelPkgPath: "internal/dal/entity",     // Entity 输出目录。
+        OutPath:      "internal/dal/dao",        // DAO 输出目录。
+        RepoPath:     "internal/dal/repository", // Repository 输出目录。
+        DtoPath:      "internal/dal/dto",        // DTO 首次创建后不覆盖。
+        VoPath:       "internal/dal/vo",         // VO 首次创建后不覆盖。
+        Pluralize:    false,                     // true：users、sys_users；false：user、sys_user。
+        MongoDB: mongoplus.Config{               // 可选；完整填写则在生成时同步数据库，省略或全零则仅生成文件。
+            URI:         mongoConfig.URI,         // 读取 YAML mongodb.uri，如 mongodb://127.0.0.1:27017。
+            Database:    mongoConfig.Database,    // 读取 YAML mongodb.database，如 shop；这是数据库名。
+            MaxPoolSize: mongoConfig.MaxPoolSize, // 读取 YAML mongodb.maxPoolSize，如 100；0 使用驱动默认值。
+            Timeout:     mongoConfig.Timeout,     // 可选的 Go time.Duration；0 不设置驱动操作超时。
+        },
+        ID: mongoplus.IDConfig{                  // 全局主键，单个实体可以覆盖。
+            Type: mongoplus.IDTypeInt64,          // 只配置类型，自动使用 int64 自增主键。
+        },
+        SoftDelete: mongoplus.Bool(true),        // 启用逻辑删除，false 明确关闭。
+        Timestamps: mongoplus.Bool(true),        // 自动维护 CreatedAt、UpdatedAt。
+    }
+    // MongoDB 已配置：先同步集合、索引、校验器，再生成文件；未配置：只生成文件。
+    if err := mongoplus.Generate(cfg); err != nil { log.Fatal(err) }
+}
+```
+
+业务配置示例 application.dev.yml（可包含项目的其他配置段）：
+
+```yaml
+mongodb:
+  uri: "mongodb://127.0.0.1:27017"
+  database: shop
+  maxPoolSize: 100
+```
+
+```bash
+# 直接生成文件，不要求存在 YAML 数据源。
+go run generator.go
+
+# 从业务 YAML 读取数据源，先创建/同步集合，再生成文件。
+go run generator.go -config application.dev.yml
+go mod tidy
+```
+
+项目已有配置加载器时，可以替换示例中的 YAML 读取部分。上方 MongoDB 已展开全部连接字段；URI、Database、MaxPoolSize 来自业务 YAML，Timeout 仅供 Go 代码设置（例如 `10 * time.Second`，需导入 time），不直接从 YAML 读取。
+
+如果直接在 Go 中填写数据源，可将上面的 MongoDB 配置替换为：
+
+```go
+MongoDB: mongoplus.Config{
+    URI:         "mongodb://127.0.0.1:27017", // MongoDB 连接地址；认证、副本集、TLS 参数也通过 URI 配置。
+    Database:    "shop",                      // 数据库名，集合名由 JSON 文件名或 collection 决定。
+    MaxPoolSize: 100,                         // 可选，连接池最大连接数；0 使用驱动默认值。
+    Timeout:     0,                           // 可选，Go time.Duration；例如 10 * time.Second。
+},
+```
+
+不需要在生成阶段同步数据库时，省略整个 MongoDB 字段。Go 中的相对输出路径以运行命令的业务项目根目录为准。
+
+### 方式二：完整生成配置放在 YAML
 
 生成配置统一放在 `mongo-plus.yml`（也支持 .yaml），generator.go 只加载配置并调用公共包。
 
@@ -86,8 +157,7 @@ dto_path: internal/dal/dto # 可选，留空不生成。
 vo_path: internal/dal/vo # 可选，留空不生成。
 pluralize: false # false（默认）为 user、sys_user；true 为 users、sys_users。
 id:
-  type: int64
-  generation: increment
+  type: int64 # 只配置类型，默认自增；无需再写 generation。
 softDelete: true
 timestamps: true
 
@@ -113,9 +183,40 @@ pluralize 就是“是否在集合名后面带 s”的全局配置：`false` 或
 
 `//go:build ignore` 保证 generator.go 不参与服务正常构建。YAML 中路径相对该配置文件所在目录。Package、ModelPkgPath、OutPath、RepoPath、DtoPath、VoPath 与 gorm-plus 对应字段含义一致。Go 代码仍可直接构造 GeneratorConfig，MongoDB 同样是可选字段。
 
-本库的 [generator.go](generator.go) 默认读取 [examples/mongo-plus.yaml](examples/mongo-plus.yaml)，用于重新生成仓库内示例；业务项目复制上面的入口即可。
-
 所有实体继承全局 ID、SoftDelete、Timestamps，不用逐个重复配置。未配置 ID 时默认 objectId + auto；SoftDelete、Timestamps 默认 true，可通过 Bool(false) 关闭。
+
+主键通常只配置 Type，Generation 会自动关联：
+
+| Go 主键类型 | YAML/JSON type | 默认生成方式 |
+| --- | --- | --- |
+| mongoplus.IDTypeObjectID | objectId | auto：自动生成 ObjectID |
+| mongoplus.IDTypeInt64 | int64 | increment：自动分配自增数字 |
+| mongoplus.IDTypeString | string | manual：由业务提供字符串主键 |
+
+例如 `ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64}` 即可开启自增主键。整个 ID 配置省略时，默认自动生成 ObjectID。单个 JSON 实体也只需写 `"id": {"type": "objectId"}`；覆盖为不同类型时，生成方式会按新类型重新推导。
+
+需要覆盖默认生成方式时，才填写 Generation，例如 int64 主键改为由业务提供：
+
+```go
+ID: mongoplus.IDConfig{
+    Type:       mongoplus.IDTypeInt64,
+    Generation: mongoplus.IDGenerationManual, // 关闭自增，创建文档时由业务传入 ID。
+},
+```
+
+YAML/JSON 对应填写 `type: int64`、`generation: manual`。Go 配置可用常量如下：
+
+| 配置字段 | 可用常量 | YAML/JSON 值 |
+| --- | --- | --- |
+| ID.Type | mongoplus.IDTypeObjectID | objectId |
+| ID.Type | mongoplus.IDTypeInt64 | int64 |
+| ID.Type | mongoplus.IDTypeString | string |
+| ID.Generation | mongoplus.IDGenerationAuto | auto |
+| ID.Generation | mongoplus.IDGenerationIncrement | increment |
+| ID.Generation | mongoplus.IDGenerationManual | manual |
+
+YAML/JSON 仍使用字符串，不写 Go 常量名称。auto 仅用于 ObjectID，increment 仅用于 int64，manual 支持三种主键类型；非法值和不支持的组合会在生成或创建 Repository 时返回错误。
+
 
 `schema/user.json`：
 
@@ -149,8 +250,6 @@ pluralize 就是“是否在集合名后面带 s”的全局配置：`false` 或
 
 `Pluralize` 是 bool 开关，true 仅在自动推导的名称末尾追加 s，不进行英语单复数变形。上述两个 sysUser 写法是二选一；同时定义会因实体/集合名称冲突而报错。单个实体可用 `"collection": "custom_users"` 完整覆盖集合名，工具不会再对它转下划线或追加后缀；`entity` 仅覆盖 Go 类型名，不改变按文件名推导的集合名。
 
-**命名行为变更：旧版本默认追加 s；现在默认不追加。** 已使用 `users` 等集合的项目应设置 `Pluralize: true`（YAML 为 `pluralize: true`），或逐个明确 collection，避免生成的 Repository 指向新集合。本库示例已显式配置 true，继续使用原有集合。
-
 主键、时间和逻辑删除字段由工具补充，JSON 的 `fields` 不重复定义它们。
 
 单个实体覆盖全局设置：
@@ -158,7 +257,7 @@ pluralize 就是“是否在集合名后面带 s”的全局配置：`false` 或
 ```json
 {
   "comment": "事件记录",
-  "id": {"type": "objectId", "generation": "auto"},
+  "id": {"type": "objectId"},
   "softDelete": false,
   "fields": [
     {"name": "message", "type": "string", "comment": "内容"}
@@ -178,7 +277,19 @@ pluralize 就是“是否在集合名后面带 s”的全局配置：`false` 或
 
 主键 Go 字段为 `ID`，BSON 字段为 `_id`，JSON 字段为 `id`。生成的 Repository 方法参数与主键类型一致。更换已有集合的主键类型不属于结构自动同步，需要单独迁移。
 
-自增计数存储在当前数据库的 `__mongo_plus_sequences` 集合中，按业务集合分配，使用 majority 写确认和原子 `$inc`，多个进程共享序列。序列独立于业务事务，因此回滚和失败允许跳号，不承诺连续编号。导入已有数字主键的集合时，应先将序列调整至现有最大 ID；不要同时用 manual 和 increment 模式写同一个集合。
+自增计数存储在当前数据库的 `__mongo_plus_sequences` 集合中，按业务集合分配，使用 majority 写确认和原子 `$inc`，多个进程共享序列。序列独立于业务事务，因此回滚和失败允许跳号，不承诺连续编号。批量创建按块一次申请多个号码，避免每条额外访问序列表。导入已有数字主键的集合时，应先将序列调整至现有最大 ID；不要同时用 manual 和 increment 模式写同一个集合。
+
+单条高频写入可选开启号码预分配；默认仍按需申请，不改变常用 Type 配置：
+
+```go
+ID: mongoplus.IDConfig{
+    Type:      mongoplus.IDTypeInt64,
+    BlockSize: 100, // 可选；同一 Database 包装器下，同集合的仓储共享号码区间。
+},
+```
+
+YAML/JSON 对应 `blockSize: 100`。范围为 0～1000000，仅用于 int64 自增；0/1 表示按需申请，单个实体可用 1 关闭继承的预分配。不同类型/生成方式的实体覆盖会清除继承的区间设置。预分配保证号码唯一，不保证多实例之间按请求或提交顺序递增；重启、回滚和切换包装器可能跳过未用号码。需要严格按分配请求逐次递增时保持默认配置。
+
 
 ## 2. 生成代码与同步数据库
 
@@ -243,20 +354,68 @@ internal/dal/
 - DTO 不包含自动维护的租户、创建时间、更新时间、逻辑删除字段；VO 包含主键、业务字段和查询所需时间、租户字段，省略逻辑删除字段。VO 默认列出其余字段，接口返回前应裁剪密码等敏感信息。
 - ObjectID、Decimal128、日期时间在 DTO 中使用 string，分别由业务层调用 `bson.ObjectIDFromHex`、`bson.ParseDecimal128`、`time.ParseInLocation` 转成 Entity 类型；嵌套对象、数组同样生成请求类型。VO 保留 Entity 的 BSON 类型和字段标签，可直接用于 `Scan`、`ScanByPage`；按接口需要自行格式化输出。
 - DTO 自带 `UnmarshalJSON`，支持数字和数字字符串兼容，不经过 float64。金额字符串保留原文，生成器不强制两位小数；仍需检查 Decimal128 解析结果和业务精度。
-- 初始 `validate` 标签包括必填、ObjectID、时间格式和数组元素校验。必填数字、bool、集合使用指针区分缺失与合法的 `0`、`false`、空集合；必填字符串要求非空，可空字段允许省略或 null。时间格式为 `2006-01-02 15:04:05`。这是常见请求校验初值，可按业务调整，与数据库 required（字段存在）并非完全相同。
+- DTO 同时生成相同规则的 `validate` 和 `binding` 标签，分别供普通 Go/go-zero 和 Gin 使用。初始规则包括必填、ObjectID、时间格式和数组元素校验。必填数字、bool、集合使用指针区分缺失与合法的 `0`、`false`、空集合；必填字符串要求非空，可空字段允许省略或 null。时间格式为 `2006-01-02 15:04:05`。这是常见请求校验初值，可按业务调整，与数据库 required（字段存在）并非完全相同。
+
+#### Gin 控制器示例
+
+参考 gof_cos_ser 的接口、实现结构体及统一响应写法。先按 [Gin 校验初始化](docs/validation.md#gin统一初始化保留现有-handler) 配置 Gin 的 binding 引擎和中文翻译，再使用下面的控制器；utils 是业务项目自己的响应和校验适配器。
+
+<!-- gin-dto-controller -->
+```go
+package user
+
+import (
+    "example.com/shop/internal/dal/dto"
+    "example.com/shop/internal/dal/entity"
+    "example.com/shop/internal/dal/repository"
+    "example.com/shop/internal/dal/vo"
+    "example.com/shop/utils"
+
+    "github.com/gin-gonic/gin"
+)
+
+type IUser interface {
+    Create(ctx *gin.Context)
+}
+
+type user struct {
+    userRepository repository.UserRepository
+}
+
+func NewUser(userRepository repository.UserRepository) IUser {
+    return &user{userRepository: userRepository}
+}
+
+func (u *user) Create(ctx *gin.Context) {
+    var req dto.CreateUserDTO
+    if err := ctx.ShouldBindJSON(&req); err != nil {
+        utils.Fail(ctx, utils.ShowErrorMessage(err))
+        return
+    }
+    // ShouldBindJSON 已按 binding 标签完成校验，不再调用 validation.Validate。
+    record := &entity.UserEntity{Username: req.Username, Status: req.Status}
+    if err := u.userRepository.Create(ctx.Request.Context(), record); err != nil {
+        utils.Fail(ctx, "创建用户失败")
+        return
+    }
+    utils.Success(ctx, vo.UserVO{
+        ID: record.ID, Username: record.Username, Status: record.Status,
+        CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
+    })
+}
+```
+
+在路由装配时构造一次控制器并注册方法，例如 `userAPI := user.NewUser(userRepository)`，再 `router.POST("/users", userAPI.Create)`。Repository 使用启动阶段建立的 MongoDB 连接，并通过构造函数注入；HTTP 层不另建数据库连接。
+
+ShouldBindJSON 会调用 DTO 自带的 UnmarshalJSON，数字与数字字符串兼容仍然生效；随后由 Gin 按 binding 标签执行一次校验。ObjectID、日期等自定义规则及中文翻译必须在启动 HTTP 服务前注册，详见 [完整初始化及错误适配](docs/validation.md)。
+
+**已有 DTO 不会被重新生成覆盖。** 如已有文件仅包含 validate 标签，应补上内容相同的 binding 标签，或备份业务修改后重新生成；仅修改 Handler 不会让 Gin 自动识别 validate 标签。不必更改 Gin 全局校验标签，以便原有 binding DTO 继续使用。
+
+#### 查询结果填充 VO
+
+在 Repository 业务扩展中封装查询，并从控制器传入 ctx.Request.Context()。查询结果可直接填入 VO：
 
 ```go
-var req dto.CreateUserDTO
-if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-    // 返回 JSON 解析错误。
-    return
-}
-if err := validation.Validate(&req); err != nil {
-    // 返回中文参数校验错误。
-    return
-}
-// 将 req 的业务字段显式映射到 Entity 后调用 Repository.Create；不会自动写入数据库。
-
 var rows []vo.UserVO
 total, err := userRepository.WithContext(ctx).
     Where(dao.UserEntity.Status.Eq(1)).
@@ -264,11 +423,11 @@ total, err := userRepository.WithContext(ctx).
     ScanByPage(&rows, 1, 20)
 ```
 
-以上示例按业务项目导入 `internal/dal/dto`、`internal/dal/vo`、`internal/dal/dao`，校验包为 `github.com/kuangshp/mongo-plus/validation`。Gin 直接绑定这些 DTO 后调用同一个 `validation.Validate`，无需再定义一套相同请求结构，详见 [Gin 校验用法](docs/validation.md)。go-zero 的 `.api` 仍是 HTTP 契约来源，goctl 生成的 `types` 不会自动替换为 DTO；在 Logic 中按需映射，避免手动维护两份协议。
+以上查询示例中的 ctx 为传入 Repository 的 context.Context。普通 Go/go-zero 仍可使用 validation.Validate 校验 validate 标签；go-zero 的 .api 是 HTTP 契约来源，goctl 的 types 不会自动替换为 DTO，在 Logic 中按需映射。
 
 `schema apply` 不删除集合、文档、旧字段或现有索引，不重建冲突索引。同步新增字段不会补齐历史文档。字段重命名、类型转换、数据回填、索引替换应编写显式迁移。更新 strict 校验规则后，旧文档的后续写入可能因不符合新规则而失败，先通过 plan 审阅变更并安排迁移。
 
-集合管理和索引操作不是整体原子事务；中途失败时已完成的操作会保留，修复原因后重新执行。再次执行无变化的定义不会重复修改数据库。
+集合管理和索引操作不是整体原子事务；中途失败时已完成的操作会保留，修复原因后重新执行。再次执行无变化的定义不会重复修改数据库。同步也会检查 validationLevel/validationAction；已有集合若被改为 off、moderate 或 warn，会恢复为 strict/error。
 
 业务项目也可以使用简单 Makefile：
 
@@ -305,7 +464,7 @@ if err != nil {
 userRepository := repository.NewUserRepository(db)
 ```
 
-数据库包装器和 Repository 在启动时创建并注入业务层，不要每个请求新建 Client。已有官方驱动数据库可用 `mongoplus.NewDatabase(nativeDB)` 包装；关闭连接由拥有该 Client 的启动入口负责。
+数据库包装器和 Repository 在启动时创建并注入业务层，不要每个请求新建 Client。已有官方驱动数据库可用 `mongoplus.NewDatabase(nativeDB)` 包装；创建文档直接使用该 Client 的 BSONOptions/Registry，兼容 UseJSONStructTags 和自定义字段编码器，无需重复配置。自动管理字段（ID、租户、时间、逻辑删除、审计）应使用明确的 bson 标签。关闭连接由拥有该 Client 的启动入口负责。
 
 Gin 和 go-zero 都只需传入请求的 `context.Context`，没有框架绑定。框架的参数校验仍由业务项目负责；MongoDB 校验规则需通过配置了数据源的 Generate、SyncSchema 或 schema apply 建立。
 
@@ -320,7 +479,7 @@ users, err := userRepository.FindByIdList(ctx, []int64{1, 2, 3})
 
 找不到记录使用 `errors.Is(err, mongoplus.ErrNotFound)` 判断；重复索引保持官方驱动错误，可使用 `mongo.IsDuplicateKeyError(err)`。连接、取消、超时等错误沿用驱动语义。
 
-`CreateBatch` 顺序创建；非事务下中途失败，前面的文档可能已写入。需要整批回滚时放进 `Transaction`。它不把分批调用包装成无限大小的内存批处理。
+`CreateBatch` 使用有序 InsertMany，每块最多 1000 条；自增主键每块只申请一次号码区间。每块先检查实体和自动字段，再交给原生驱动编码，成功后回填实体。非事务下失败时，前面的文档可能已写入，只回填已确认成功的前缀，后续文档不再插入；错误链保留驱动错误，唯一索引冲突仍可用 mongo.IsDuplicateKeyError 判断。网络中断或写确认失败时，当前块的写入结果可能不确定，不回填该块；应按业务幂等键核对结果。需要整批回滚时使用 Transaction。w=0 未确认写入返回 ErrUnacknowledgedWrite。
 
 ## 4. 条件构造与分页
 
@@ -504,11 +663,21 @@ users, err := userRepository.FindList(ctx,
 )
 ```
 
-默认关闭读缓存。WithCache 自动合并相同在途查询；WithSingleFlight 只合并请求，不保存结果。缓存键包含租户、过滤、投影、排序和分页，不需要手写 Args。读出对象分别反序列化，调用方修改对象不会污染缓存。
+默认关闭读缓存。WithCache 自动合并相同在途查询；WithSingleFlight 只合并请求，不保存结果。缓存键包含租户、过滤、投影、排序和分页，不需要手写 Args。返回已解码 Go 值的独立深拷贝，调用方修改嵌套切片、map、指针不会污染缓存，也不会二次使用默认 BSON 编解码器。无法安全复制的自定义私有引用类型和循环引用绕过共享，不改变正常查询结果。
 
-缓存属于一个复用的 Database 包装器，最多保留 1024 条结果，使用 TTL。仓储写入自动按集合失效，并阻止旧的在途读取把失效数据重新写回缓存。Transaction 内跳过读缓存，在事务结束后失效涉及的集合。驱动外部 Session 写入无法获知提交时刻，会关闭当前包装器的本机缓存；需要缓存的事务请使用本库 Transaction。
+缓存属于一个复用的 Database 包装器，默认最多保留 1024 条结果、约 64 MiB 保留对象，单条最多约 1 MiB，使用 TTL。超出单条限制仍正常返回，只是不进入缓存；总容量不足时清理过期结果并淘汰已有结果。容量按 Go 对象保守估算，不包含在途查询、驱动缓冲区和运行时额外开销，不是进程内存的硬上限。仓储写入自动按集合失效，并阻止旧的在途读取把失效数据重新写回缓存。Transaction 内跳过读缓存，在事务结束后失效涉及的集合。驱动外部 Session 写入无法获知提交时刻，会关闭当前包装器的本机缓存；需要缓存的事务请使用本库 Transaction。
 
 本机缓存不提供多进程或外部写入的一致性保证。多个服务实例或外部程序写同一个集合时，保持缓存关闭，或接受所设 TTL 的陈旧窗口。本版没有内置 Redis 缓存后端。通过 Native 写入后，需要调用 `db.InvalidateCache(collection)`；原生写入也需要自行处理租户、审计和逻辑删除。
+
+可在启动时调整缓存容量，缓存仍由每次查询的 WithCache 显式开启：
+
+```go
+err := db.ConfigureCache(mongoplus.CacheConfig{
+    MaxEntries:    1024,
+    MaxBytes:      64 << 20, // 总容量约 64 MiB。
+    MaxEntryBytes: 1 << 20,  // 单条约 1 MiB，避免缓存整个大集合。
+})
+```
 
 SingleFlight 的数据库查询使用发起者 Context；发起者取消可能使同组调用者收到错误，其他调用者自己的取消会立即结束等待。
 
@@ -521,7 +690,7 @@ db.Observer = func(ctx context.Context, event mongoplus.Observation) {
 }
 ```
 
-在启动时设置 Observer，不在并发请求中更换。Create、FindOne、FindList、Update、Delete 会报告耗时与错误，不默认记录请求文档或连接密钥。
+在启动时设置 Observer，不在并发请求中更换。Create、CreateBatch、FindOne、FindList、Update、Delete 会报告耗时与错误，不默认记录请求文档或连接密钥。
 
 ## 9. 手写 Entity 路线
 
@@ -843,15 +1012,9 @@ err := userRepository.WithContext(ctx).
 
 分组分页在 GroupBy、Having 后统计 total，并按分组 `_id` 补充稳定排序；仍受上节提到的 facet 内存与文档大小限制。Push/AddToSet 生成大数组时同样需要控制结果规模。
 
-### 运行完整示例与高级管道
+### 原生聚合扩展
 
-```bash
-# 先在 examples/mongo-plus.yaml 中填写 mongodb 的 uri、database。
-make gen
-make statistics-example
-```
-
-[完整订单统计示例](examples/statistics/main.go)会创建三笔演示订单，只统计本次生成的 ID，展示全部订单汇总、分类金额分页与标签计数。
+完整用法参考 [订单统计示例](examples/statistics/main.go)，包含全部订单汇总、分类金额分页与标签计数。
 
 当前链式封装覆盖上表常用统计，不代表所有 MongoDB 运算符均已封装。日期表达式、条件计算、Bucket、窗口函数等可在自定义仓储中使用原生聚合；原有 `mongoplus.Aggregate[VO](ctx, r.Repository, pipeline)` 支持白名单内的单集合只读管道。涉及额外集合或写入的原生阶段需通过 Native 显式处理权限、事务与数据生命周期。
 
@@ -860,10 +1023,11 @@ make statistics-example
 与 gorm-plus 一样，通过 CLI 调用内嵌模板。数据模型与接口协议分开维护：
 
 ```bash
-# 先在本库安装当前源码的 CLI。
-go install ./cmd/mongoplus
+# 安装模板工具。
+go install github.com/kuangshp/mongo-plus/cmd/mongoplus@latest
+go install github.com/zeromicro/go-zero/tools/goctl@v1.10.2
 
-# 然后进入业务项目的服务目录。
+# 在业务项目的服务目录执行。
 go run generator.go
 mongoplus goctl api go --api shop.api --dir . --style=goZero
 go mod tidy
@@ -918,7 +1082,7 @@ build: swagger
 	go build -o bin/shop .
 ```
 
-首次先安装 goctl 和与业务依赖一致的 mongoplus；[示例 Makefile](examples/gozero/Makefile) 带有 install-tools，使用本地源码而非尚未发布的 latest。命令行前使用 Tab。开启 SwaggerConfig.Enabled 后，run/build 自动准备并内嵌文档；关闭时准备编译占位文件。
+首次先安装 goctl 和与业务依赖版本一致的 mongoplus。Makefile 命令行前使用 Tab。开启 SwaggerConfig.Enabled 后，run/build 自动准备并内嵌文档；关闭时准备编译占位文件。
 
 - [完整 go-zero 配置、MongoDB 生命周期与 Repository 注入](docs/gozero.md)
 - [参数校验、自定义规则与 Gin 接入](docs/validation.md)
@@ -927,19 +1091,8 @@ build: swagger
 
 已有服务重新生成时不会自动覆盖所有旧入口和 Handler，应先对照新版模板合并所需功能，保留业务代码。
 
-## 验证
+## 性能与生产使用
 
-```bash
-make test
-make vet
-make build
+大批量写入使用 CreateBatch，高频数字主键按需启用 BlockSize；大集合分页优先使用 FindCursorPage，大量导出使用 Walk。关联字段应建立合适的索引，并通过 Select、Limit 控制一对多结果大小；ScanByPage 的 facet 内存和文档大小限制仍遵循 MongoDB 服务端规则。
 
-# 真实 goctl 生成、编译并启动 HTTP 服务，以及 Gin 绑定示例。
-MONGOPLUS_GOCTL_INTEGRATION=1 MONGOPLUS_GIN_INTEGRATION=1 go test -race ./generator/gozero ./validation
-
-# 真实 MongoDB 副本集；测试创建并清理 mongo_plus_test_<随机ID> 数据库。
-export MONGOPLUS_TEST_URI='mongodb://127.0.0.1:27017/?replicaSet=rs0'
-make integration
-```
-
-未设置测试 URI 时真实数据库测试明确跳过；普通测试仍验证 JSON、配置、查询构造、生成结果编译和扩展保留。真实测试覆盖并发自增、三种主键、租户隔离、零值更新、逻辑删除与恢复、分页、事务回滚/重试、缓存失效、集合校验和索引幂等性；关联测试覆盖左/内关联、数组关联、多个集合串联、关联结果过滤与 VO 投影、主/关联租户隔离、关联逻辑删除、三种 ID 类型、展开后分页总数及事务中的关联读取；链式入口还覆盖生成接口、切片/指针切片结果、单条未找到、分页空结果、上下文取消与事务回滚。聚合测试覆盖计数、求和/均值/极值、Decimal128 精度、标准差、首末值与数组收集、多字段分组、Having、二次分组、数组展开、关联后统计和分组分页。
+生产使用前应完成真实数据量与目标并发的压测、超时与故障恢复验证。仓库持续集成包含真实三节点副本集、竞态检查、Gin/goctl 集成、主节点切换后读写与事务恢复、漏洞扫描；这些检查不替代业务环境的容量和长期稳定性验证。详细命令与限制见 [性能验证与生产接入](docs/performance.md)。

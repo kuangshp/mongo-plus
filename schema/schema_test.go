@@ -175,3 +175,23 @@ func TestOptionalMongoDBConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestSequenceBlockInheritance(t *testing.T) {
+	c := testConfig(t, map[string]string{
+		"user":     `{"fields":[]}`,
+		"event":    `{"id":{"type":"objectId"},"fields":[]}`,
+		"manual":   `{"id":{"generation":"manual"},"fields":[]}`,
+		"disabled": `{"id":{"blockSize":1},"fields":[]}`,
+	})
+	c.ID.BlockSize = 100
+	entities, err := LoadEntities(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]int64{"UserEntity": 100, "EventEntity": 0, "ManualEntity": 0, "DisabledEntity": 1}
+	for _, e := range entities {
+		if e.ID.BlockSize != wants[e.Entity] {
+			t.Fatalf("实体预分配继承错误 %s %+v", e.Entity, e.ID)
+		}
+	}
+}

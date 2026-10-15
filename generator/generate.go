@@ -214,10 +214,12 @@ func render(e schema.Entity, modelImport string, c schema.Config) (model, dao, r
 	}
 	var repos strings.Builder
 	name := strings.TrimSuffix(root, "Entity")
-	idType := goScalar(e.ID.Type)
+	idType := goScalar(string(e.ID.Type))
 	fmt.Fprintf(&repos, "// iDefault%sRepository 的基础方法签名随生成代码更新。\ntype iDefault%sRepository interface { mongoplus.Contract[model.%s,%s] }\n", name, name, root, idType)
 	fmt.Fprintf(&repos, "// default%sRepository 实现生成的基础仓储，业务扩展在同名非生成文件。\ntype default%sRepository struct {\n *mongoplus.Repository[model.%s, %s]\n}\n", name, name, root, idType)
-	fmt.Fprintf(&repos, "// newDefault%sRepository 使用生成时解析的全局/实体配置。\nfunc newDefault%sRepository(db *mongoplus.Database) *default%sRepository {\n return &default%sRepository{mongoplus.MustRepository[model.%s,%s](db,mongoplus.CollectionConfig{Name:%q,ID:mongoplus.IDConfig{Type:%q,Generation:%q},SoftDelete:%t,Timestamps:%t,TenantField:%q})}\n}\n", name, name, name, name, root, idType, e.Collection, e.ID.Type, e.ID.Generation, *e.SoftDelete, *e.Timestamps, e.Runtime().TenantField)
+	typeConstant := map[string]string{"objectId": "IDTypeObjectID", "int64": "IDTypeInt64", "string": "IDTypeString"}[string(e.ID.Type)]
+	generationConstant := map[string]string{"auto": "IDGenerationAuto", "increment": "IDGenerationIncrement", "manual": "IDGenerationManual"}[string(e.ID.Generation)]
+	fmt.Fprintf(&repos, "// newDefault%sRepository 使用生成时解析的全局/实体配置。\nfunc newDefault%sRepository(db *mongoplus.Database) *default%sRepository {\n return &default%sRepository{mongoplus.MustRepository[model.%s,%s](db,mongoplus.CollectionConfig{Name:%q,ID:mongoplus.IDConfig{Type:mongoplus.%s,Generation:mongoplus.%s,BlockSize:%d},SoftDelete:%t,Timestamps:%t,TenantField:%q})}\n}\n", name, name, name, name, root, idType, e.Collection, typeConstant, generationConstant, e.ID.BlockSize, *e.SoftDelete, *e.Timestamps, e.Runtime().TenantField)
 	repo, err = source(c.PackageName("repository"), repos.String(), map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
 	if err != nil {
 		return
@@ -232,7 +234,7 @@ func render(e schema.Entity, modelImport string, c schema.Config) (model, dao, r
 }
 
 func effectiveFields(e schema.Entity) []schema.Field {
-	fields := []schema.Field{{Name: "_id", GoName: "ID", Type: e.ID.Type, Comment: "主键"}}
+	fields := []schema.Field{{Name: "_id", GoName: "ID", Type: string(e.ID.Type), Comment: "主键"}}
 	fields = append(fields, e.Fields...)
 	if e.Tenant != nil {
 		fields = append(fields, schema.Field{Name: e.Tenant.Name, GoName: schema.GoName(e.Tenant.Name), Type: e.Tenant.Type, Comment: "租户隔离字段"})

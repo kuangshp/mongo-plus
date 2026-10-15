@@ -8,8 +8,7 @@ vo_path: query/vo # 可选；仅首次创建，不覆盖业务修改。
 
 # 主键配置一次；所有实体默认继承。
 id:
-  type: int64
-  generation: increment
+  type: int64 # 默认自增；无需再配置 generation。
 
 softDelete: true # 默认逻辑删除；实体可以覆盖为 false。
 timestamps: true # 自动生成并填充 created_at、updated_at。

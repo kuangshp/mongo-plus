@@ -2,6 +2,8 @@ module github.com/kuangshp/mongo-plus/examples/gozero
 
 go 1.25.5
 
+toolchain go1.26.9
+
 require (
 	github.com/kuangshp/mongo-plus v0.0.0
 	github.com/zeromicro/go-zero v1.10.2

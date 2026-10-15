@@ -18,5 +18,5 @@ type defaultOrderRepository struct {
 
 // newDefaultOrderRepository 使用生成时解析的全局/实体配置。
 func newDefaultOrderRepository(db *mongoplus.Database) *defaultOrderRepository {
-	return &defaultOrderRepository{mongoplus.MustRepository[model.OrderEntity, int64](db, mongoplus.CollectionConfig{Name: "orders", ID: mongoplus.IDConfig{Type: "int64", Generation: "increment"}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultOrderRepository{mongoplus.MustRepository[model.OrderEntity, int64](db, mongoplus.CollectionConfig{Name: "orders", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64, Generation: mongoplus.IDGenerationIncrement, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
 }

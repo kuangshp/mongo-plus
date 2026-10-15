@@ -7,6 +7,7 @@ import (
 	"github.com/kuangshp/mongo-plus/internal/testutil"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func TestSchemaApplyAndIdempotency(t *testing.T) {
@@ -81,5 +82,37 @@ func TestIndexConflictAndActiveOnly(t *testing.T) {
 	entities[0].Indexes[0].Unique = false
 	if _, err = Plan(ctx, db, entities); err == nil {
 		t.Fatal("未发现索引定义冲突")
+	}
+}
+
+func TestSchemaRepairsValidationModeDrift(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.Database(t)
+	c := testConfig(t, map[string]string{"user": `{"timestamps":false,"fields":[{"name":"name","type":"string","required":true}]}`})
+	entities, err := LoadEntities(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []struct{ level, action string }{{"off", "error"}, {"strict", "warn"}, {"moderate", "error"}, {"off", "warn"}} {
+		t.Run(mode.level+"-"+mode.action, func(t *testing.T) {
+			e := entities[0]
+			e.Collection = "drift_" + mode.level + "_" + mode.action
+			if err := db.CreateCollection(ctx, e.Collection, options.CreateCollection().SetValidator(e.Validator()).SetValidationLevel(mode.level).SetValidationAction(mode.action)); err != nil {
+				t.Fatal(err)
+			}
+			changes, err := Plan(ctx, db, []Entity{e})
+			if err != nil || len(changes) != 1 || !changes[0].UpdateValidator {
+				t.Fatalf("未检测校验状态变化 %+v %v", changes, err)
+			}
+			if _, err := Apply(ctx, db, []Entity{e}); err != nil {
+				t.Fatal(err)
+			}
+			if changes, err := Plan(ctx, db, []Entity{e}); err != nil || len(changes) != 0 {
+				t.Fatalf("同步不幂等 %+v %v", changes, err)
+			}
+			if _, err := db.Collection(e.Collection).InsertOne(ctx, bson.M{"_id": int64(1), "name": 123}); err == nil {
+				t.Fatal("校验仍然未生效")
+			}
+		})
 	}
 }

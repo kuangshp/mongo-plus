@@ -312,10 +312,17 @@ func (e *Entity) Normalize(c Config, filename string) error {
 	if e.ID != nil {
 		if e.ID.Type != "" && e.ID.Type != id.Type {
 			id.Generation = ""
+			id.BlockSize = 0
 			id.Type = e.ID.Type
 		}
 		if e.ID.Generation != "" {
+			if e.ID.Generation != id.Generation {
+				id.BlockSize = 0
+			}
 			id.Generation = e.ID.Generation
+		}
+		if e.ID.BlockSize != 0 {
+			id.BlockSize = e.ID.BlockSize
 		}
 	}
 	var err error
@@ -472,7 +479,7 @@ func (e Entity) HasField(path string) bool { return e.fieldType(path) != "" }
 
 func (e Entity) fieldType(path string) string {
 	if path == "_id" {
-		return e.ID.Type
+		return string(e.ID.Type)
 	}
 	if path == "deleted_at" && *e.SoftDelete {
 		return "datetime"
@@ -516,7 +523,7 @@ func (e Entity) Runtime() settings.CollectionConfig {
 // Validator 将定义转换成 MongoDB 原生 JSON Schema；required 只表示字段存在。
 func (e Entity) Validator() bson.D {
 	properties, required := properties(e.Fields)
-	properties = append(properties, bson.E{Key: "_id", Value: bson.D{{Key: "bsonType", Value: bsonType(e.ID.Type)}}})
+	properties = append(properties, bson.E{Key: "_id", Value: bson.D{{Key: "bsonType", Value: bsonType(string(e.ID.Type))}}})
 	required = append(required, "_id")
 	if *e.SoftDelete {
 		properties = append(properties, bson.E{Key: "deleted_at", Value: bson.D{{Key: "bsonType", Value: bson.A{"date", "null"}}}})

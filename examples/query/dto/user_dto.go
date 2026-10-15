@@ -7,9 +7,9 @@ import (
 
 // CreateUserDTO 用户；修改 DTO 表示完整业务字段提交，不是 PATCH。
 type CreateUserDTO struct {
-	Username string `json:"username" validate:"required"` // 用户名
-	Status   int64  `json:"status" validate:"omitempty"`  // 状态：1正常，2禁用
-	DeptID   int64  `json:"dept_id" validate:"omitempty"` // 所属部门 ID
+	Username string `json:"username" validate:"required" binding:"required"`  // 用户名
+	Status   int64  `json:"status" validate:"omitempty" binding:"omitempty"`  // 状态：1正常，2禁用
+	DeptID   int64  `json:"dept_id" validate:"omitempty" binding:"omitempty"` // 所属部门 ID
 }
 
 // UnmarshalJSON 兼容数字和数字字符串，保留数值原文。
@@ -20,10 +20,10 @@ func (value *CreateUserDTO) UnmarshalJSON(data []byte) error {
 
 // ModifyUserDTO 用户；修改 DTO 表示完整业务字段提交，不是 PATCH。
 type ModifyUserDTO struct {
-	ID       int64  `json:"id" validate:"required"`       // 主键
-	Username string `json:"username" validate:"required"` // 用户名
-	Status   int64  `json:"status" validate:"omitempty"`  // 状态：1正常，2禁用
-	DeptID   int64  `json:"dept_id" validate:"omitempty"` // 所属部门 ID
+	ID       int64  `json:"id" validate:"required" binding:"required"`        // 主键
+	Username string `json:"username" validate:"required" binding:"required"`  // 用户名
+	Status   int64  `json:"status" validate:"omitempty" binding:"omitempty"`  // 状态：1正常，2禁用
+	DeptID   int64  `json:"dept_id" validate:"omitempty" binding:"omitempty"` // 所属部门 ID
 }
 
 // UnmarshalJSON 兼容数字和数字字符串，保留数值原文。

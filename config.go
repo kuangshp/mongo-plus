@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kuangshp/mongo-plus/internal/settings"
@@ -15,14 +16,32 @@ import (
 )
 
 var (
-	ErrNotFound       = mongo.ErrNoDocuments
-	ErrUnsafeWrite    = errors.New("批量写入必须指定业务条件，或显式调用 AllowAll")
-	ErrTenantRequired = errors.New("缺少租户信息")
-	ErrInvalidID      = errors.New("主键类型或值无效")
+	ErrNotFound            = mongo.ErrNoDocuments
+	ErrUnsafeWrite         = errors.New("批量写入必须指定业务条件，或显式调用 AllowAll")
+	ErrTenantRequired      = errors.New("缺少租户信息")
+	ErrInvalidID           = errors.New("主键类型或值无效")
+	ErrUnacknowledgedWrite = errors.New("写入未获得确认，不能确定是否成功")
 )
 
-// IDConfig 配置主键类型与生成方式；集合的 _id 映射为 Go 的 ID 字段。
+// IDConfig 通常只配置 Type；集合的 _id 映射为 Go 的 ID 字段。
+// Generation 省略时：ObjectID 自动生成、int64 自增、string 由业务提供。
 type IDConfig = settings.IDConfig
+
+// IDType 是主键类型，推荐使用 IDTypeObjectID、IDTypeInt64、IDTypeString。
+type IDType = settings.IDType
+
+// IDGeneration 是主键生成方式，推荐使用对应的 IDGeneration 常量。
+type IDGeneration = settings.IDGeneration
+
+const (
+	IDTypeObjectID IDType = settings.IDTypeObjectID // bson.ObjectID 主键。
+	IDTypeInt64    IDType = settings.IDTypeInt64    // int64 主键。
+	IDTypeString   IDType = settings.IDTypeString   // string 主键。
+
+	IDGenerationAuto      IDGeneration = settings.IDGenerationAuto      // ObjectID 自动生成。
+	IDGenerationIncrement IDGeneration = settings.IDGenerationIncrement // int64 自增。
+	IDGenerationManual    IDGeneration = settings.IDGenerationManual    // 业务提供。
+)
 
 // CollectionConfig 是生成 Repository 携带的集合规则。
 type CollectionConfig = settings.CollectionConfig
@@ -43,9 +62,10 @@ type Observer func(context.Context, Observation)
 
 // Database 持有可复用的驱动数据库和可选监控回调。
 type Database struct {
-	native   *mongo.Database
-	cache    readCache
-	Observer Observer
+	native    *mongo.Database
+	cache     readCache
+	sequences sync.Map // 集合名 -> 本包装器共享的预分配号码区间。
+	Observer  Observer
 }
 
 // Connect 建立连接并 Ping；连接池由官方 Client 管理。

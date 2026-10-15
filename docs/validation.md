@@ -182,6 +182,20 @@ if err := ctx.ShouldBindJSON(&req); err != nil {
 
 这样可以保留项目现有 `code/message/result` 响应格式。`FirstMessage(nil)` 返回空字符串，字段错误使用 JSON 字段名和中文提示，JSON 语法错误仍按原始解析错误处理。自定义规则的错误必须由 `requestValidator.FirstMessage` 翻译，不能换用包级 `validation.FirstMessage`，后者属于另一个默认引擎。
 
+### 5. 直接使用生成的 DTO
+
+mongo-plus 生成的 CreateUserDTO、ModifyUserDTO 现在同时带有相同规则的 validate 和 binding 标签。例如：
+
+```go
+type CreateUserDTO struct {
+    Username string `json:"username" validate:"required" binding:"required"`
+}
+```
+
+在以上初始化完成后，可直接 `ctx.ShouldBindJSON(&req)`，错误经 utils.ShowErrorMessage 翻译后交给 utils.Fail，不需要再调用 validation.Validate。自带的 UnmarshalJSON 会先处理数字/数字字符串兼容。完整的接口、构造函数、Repository 注入和响应示例见 [README 的 Gin 控制器示例](../README.md#gin-控制器示例)。
+
+已有 DTO 首次创建后不会覆盖，只有 validate 标签的旧文件需补充同样的 binding 标签，或备份业务修改后重新生成。不要在 Gin 全局切换为 validate 标签，否则参考项目原有的 binding DTO 将失去校验。
+
 ## 从 go-utils 迁移
 
 1. 业务项目使用包含本包的 mongo-plus 版本；未发布时可临时将模块 `replace` 指向本地源码验证。

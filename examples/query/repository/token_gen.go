@@ -18,5 +18,5 @@ type defaultTokenRepository struct {
 
 // newDefaultTokenRepository 使用生成时解析的全局/实体配置。
 func newDefaultTokenRepository(db *mongoplus.Database) *defaultTokenRepository {
-	return &defaultTokenRepository{mongoplus.MustRepository[model.TokenEntity, string](db, mongoplus.CollectionConfig{Name: "tokens", ID: mongoplus.IDConfig{Type: "string", Generation: "manual"}, SoftDelete: false, Timestamps: false, TenantField: ""})}
+	return &defaultTokenRepository{mongoplus.MustRepository[model.TokenEntity, string](db, mongoplus.CollectionConfig{Name: "tokens", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeString, Generation: mongoplus.IDGenerationManual, BlockSize: 0}, SoftDelete: false, Timestamps: false, TenantField: ""})}
 }

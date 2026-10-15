@@ -7,37 +7,61 @@ import (
 	"time"
 )
 
-// IDConfig 配置主键类型与生成方式；集合的 _id 始终映射为 Go 的 ID 字段。
+// IDType 表示主键类型；字符串底层类型保持 YAML/JSON 配置格式不变。
+type IDType string
+
+const (
+	IDTypeObjectID IDType = "objectId" // 官方 bson.ObjectID。
+	IDTypeInt64    IDType = "int64"    // 64 位整数。
+	IDTypeString   IDType = "string"   // 字符串。
+)
+
+// IDGeneration 表示主键生成方式。
+type IDGeneration string
+
+const (
+	IDGenerationAuto      IDGeneration = "auto"      // ObjectID 自动生成。
+	IDGenerationIncrement IDGeneration = "increment" // int64 自增分配。
+	IDGenerationManual    IDGeneration = "manual"    // 由业务提供主键。
+)
+
+// IDConfig 配置主键；通常只设置 Type，集合的 _id 始终映射为 Go 的 ID 字段。
+// Generation 省略时按类型推导：objectId 自动生成、int64 自增、string 由业务提供。
 type IDConfig struct {
-	Type       string `json:"type" yaml:"type"`
-	Generation string `json:"generation" yaml:"generation"`
+	Type       IDType       `json:"type" yaml:"type"`
+	Generation IDGeneration `json:"generation" yaml:"generation"`
+	// BlockSize 可选；int64 自增时预分配号码数，0/1 每次按需申请。
+	BlockSize int64 `json:"blockSize,omitempty" yaml:"blockSize,omitempty"`
 }
 
 // Normalize 补全并校验主键规则。
 func (c IDConfig) Normalize() (IDConfig, error) {
 	if c.Type == "" {
-		c.Type = "objectId"
+		c.Type = IDTypeObjectID
 	}
-	switch strings.ToLower(c.Type) {
+	switch strings.ToLower(string(c.Type)) {
 	case "objectid":
-		c.Type = "objectId"
+		c.Type = IDTypeObjectID
 		if c.Generation == "" {
-			c.Generation = "auto"
+			c.Generation = IDGenerationAuto
 		}
 	case "int64":
-		c.Type = "int64"
+		c.Type = IDTypeInt64
 		if c.Generation == "" {
-			c.Generation = "increment"
+			c.Generation = IDGenerationIncrement
 		}
 	case "string":
-		c.Type = "string"
+		c.Type = IDTypeString
 		if c.Generation == "" {
-			c.Generation = "manual"
+			c.Generation = IDGenerationManual
 		}
 	default:
 		return c, fmt.Errorf("不支持的主键类型 %q", c.Type)
 	}
-	if c.Generation == "manual" || (c.Type == "objectId" && c.Generation == "auto") || (c.Type == "int64" && c.Generation == "increment") {
+	if c.BlockSize < 0 || c.BlockSize > 1_000_000 || (c.BlockSize > 0 && c.Generation != IDGenerationIncrement) {
+		return c, fmt.Errorf("blockSize 仅用于 int64 自增，范围为 0 到 1000000")
+	}
+	if c.Generation == IDGenerationManual || (c.Type == IDTypeObjectID && c.Generation == IDGenerationAuto) || (c.Type == IDTypeInt64 && c.Generation == IDGenerationIncrement) {
 		return c, nil
 	}
 	return c, fmt.Errorf("主键类型 %s 不支持生成方式 %q", c.Type, c.Generation)

@@ -119,11 +119,11 @@ func hasBSONField(fields []Field, name string) bool {
 	return false
 }
 
-func idGoType(name string) reflect.Type {
+func idGoType(name settings.IDType) reflect.Type {
 	switch name {
-	case "objectId":
+	case settings.IDTypeObjectID:
 		return reflect.TypeOf(bson.ObjectID{})
-	case "int64":
+	case settings.IDTypeInt64:
 		return reflect.TypeOf(int64(0))
 	default:
 		return reflect.TypeOf("")

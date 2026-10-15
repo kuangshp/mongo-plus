@@ -18,5 +18,5 @@ type defaultDepartmentRepository struct {
 
 // newDefaultDepartmentRepository 使用生成时解析的全局/实体配置。
 func newDefaultDepartmentRepository(db *mongoplus.Database) *defaultDepartmentRepository {
-	return &defaultDepartmentRepository{mongoplus.MustRepository[model.DepartmentEntity, int64](db, mongoplus.CollectionConfig{Name: "departments", ID: mongoplus.IDConfig{Type: "int64", Generation: "increment"}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultDepartmentRepository{mongoplus.MustRepository[model.DepartmentEntity, int64](db, mongoplus.CollectionConfig{Name: "departments", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64, Generation: mongoplus.IDGenerationIncrement, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
 }

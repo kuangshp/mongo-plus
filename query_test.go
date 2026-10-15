@@ -56,3 +56,15 @@ func TestPaginationAndInvalidOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRepositoryRejectsConflictingManagedFields(t *testing.T) {
+	root, _, _ := querySources(t)
+	for _, cfg := range []CollectionConfig{
+		{Name: "conflict", ID: IDConfig{Type: IDTypeInt64}, TenantField: "company_id", CreatedByField: "company_id"},
+		{Name: "conflict", ID: IDConfig{Type: IDTypeInt64}, CreatedByField: "actor_id", UpdatedByField: "actor_id"},
+	} {
+		if _, err := NewRepository[queryEntity, int64](root.db, cfg); err == nil {
+			t.Fatal("允许租户或审计字段互相覆盖")
+		}
+	}
+}

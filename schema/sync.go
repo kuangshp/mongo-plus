@@ -39,7 +39,9 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 		var infos []struct {
 			Name    string `bson:"name"`
 			Options struct {
-				Validator bson.D `bson:"validator"`
+				Validator        bson.D `bson:"validator"`
+				ValidationLevel  string `bson:"validationLevel"`
+				ValidationAction string `bson:"validationAction"`
 			} `bson:"options"`
 		}
 		err = cursor.All(ctx, &infos)
@@ -52,7 +54,11 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 		if len(infos) == 0 {
 			change.Create = true
 		} else {
-			change.UpdateValidator = !equalDocument(infos[0].Options.Validator, e.Validator())
+			current := infos[0].Options
+			// 未返回的选项采用服务端默认值 strict/error。
+			change.UpdateValidator = !equalDocument(current.Validator, e.Validator()) ||
+				(current.ValidationLevel != "" && current.ValidationLevel != "strict") ||
+				(current.ValidationAction != "" && current.ValidationAction != "error")
 			cursor, err = db.Collection(e.Collection).Indexes().List(ctx)
 			if err != nil {
 				return nil, err

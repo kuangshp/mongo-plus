@@ -6,10 +6,10 @@ mongo-plus 的模板参照 gorm-plus 实现，保留 Handler → Logic → Repos
 
 ## 1. 安装与准备
 
-在 mongo-plus 仓库安装当前源码：
+在业务开发环境安装公共包的 CLI：
 
 ```bash
-go install ./cmd/mongoplus
+go install github.com/kuangshp/mongo-plus/cmd/mongoplus@latest
 ```
 
 需要 goctl 时单独安装：
@@ -18,9 +18,9 @@ go install ./cmd/mongoplus
 go install github.com/zeromicro/go-zero/tools/goctl@v1.10.2
 ```
 
-将 Go 的安装目录加入 PATH。业务项目的 go.mod 同时需要 mongo-plus 和 go-zero；CLI 安装不等于添加运行时依赖。mongo-plus 尚未发布时使用 README 中的本地 replace。
+将 Go 的安装目录加入 PATH。业务项目的 go.mod 同时需要 mongo-plus 和 go-zero；CLI 安装不等于添加运行时依赖。工具版本应与业务项目的 mongo-plus 依赖版本保持一致。
 
-仓库提供独立的 [go-zero 示例模块](../examples/gozero/README.md)，在该目录执行 `make gen`、`go mod tidy`、`make run` 即可生成并启动模板服务；其中的本地 replace 仅供此仓库示例使用。
+业务项目按下文创建 generator.go、生成配置和 .api 文件即可使用内嵌模板；可参考 [go-zero 示例模块](../examples/gozero/README.md) 的目录结构。
 
 ## 2. 公共包 generator.go 与 .api 分工
 
@@ -37,7 +37,7 @@ shop/
 └── Makefile
 ```
 
-将 README 中的 [generator.go 和 mongo-plus.yml](../README.md#1-全局配置一次实体按需覆盖) 复制到业务项目根目录。Package 与 go.mod 的 module 一致，输出路径、ID、逻辑删除等均在 YAML 配置，不需要在 Go 文件重复定义。
+README 提供 [两种 generator.go 用法](../README.md#1-全局配置一次实体按需覆盖)：直接在 Go 中配置输出目录、ID、逻辑删除等参数，并按需读取业务 YAML 数据源；或通过 mongo-plus.yml 加载完整生成配置。任选一种，Package 都应与 go.mod 的 module 一致。
 
 `pluralize: false` 表示 user、sys_user；`pluralize: true` 表示 users、sys_users。不填写 mongodb 时只生成代码；填写完整数据源后，执行同一条命令会先创建/同步集合、索引、校验器，再生成文件。数据源不完整或连接失败会停止。生成器与服务运行时 MongoConfig 应读取同一个项目的数据源，但生成器不会把连接串写入 Entity、Repository。
 

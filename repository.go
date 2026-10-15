@@ -3,7 +3,6 @@ package mongoplus
 import (
 	"context"
 	"fmt"
-	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
-	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 // ID 约束仓储主键，保持 FindById 等方法的编译期类型安全。
@@ -46,13 +44,17 @@ func NewRepository[T any, K ID](db *Database, c CollectionConfig) (*Repository[T
 	if !ok || len(f.Index) != 1 || f.Type != reflect.TypeOf((*K)(nil)).Elem() {
 		return nil, fmt.Errorf("实体 ID 与仓储主键类型不一致")
 	}
-	expected := map[string]reflect.Type{"objectId": reflect.TypeOf(bson.ObjectID{}), "int64": reflect.TypeOf(int64(0)), "string": reflect.TypeOf("")}[id.Type]
+	expected := map[IDType]reflect.Type{IDTypeObjectID: reflect.TypeOf(bson.ObjectID{}), IDTypeInt64: reflect.TypeOf(int64(0)), IDTypeString: reflect.TypeOf("")}[id.Type]
 	if f.Type != expected || strings.Split(f.Tag.Get("bson"), ",")[0] != "_id" {
 		return nil, fmt.Errorf("实体 ID 与主键配置不一致")
 	}
+	reserved := map[string]bool{"_id": true, "deleted_at": true, "created_at": true, "updated_at": true}
 	for _, path := range []string{c.TenantField, c.CreatedByField, c.UpdatedByField} {
-		if path != "" && (!field.ValidPath(path) || strings.Contains(path, ".") || path == "_id" || path == "deleted_at" || path == "created_at" || path == "updated_at") {
+		if path != "" && (!field.ValidPath(path) || strings.Contains(path, ".") || reserved[path]) {
 			return nil, fmt.Errorf("无效保留字段配置 %q", path)
+		}
+		if path != "" {
+			reserved[path] = true
 		}
 	}
 	return &Repository[T, K]{db: db, collection: db.native.Collection(c.Name), config: c}, nil
@@ -129,134 +131,6 @@ func (r *Repository[T, K]) validID(id K) error {
 	return nil
 }
 
-func (r *Repository[T, K]) sequence(ctx context.Context) (int64, error) {
-	// 序列独立于业务事务分配，事务重试/回滚允许跳号，但不会重复分配号码。
-	ctx = mongo.NewSessionContext(ctx, nil)
-	var seq struct {
-		Value int64 `bson:"value"`
-	}
-	for attempt := 0; attempt < 3; attempt++ {
-		err := r.db.native.Collection("__mongo_plus_sequences", options.Collection().SetWriteConcern(writeconcern.Majority())).FindOneAndUpdate(ctx,
-			bson.D{{Key: "_id", Value: r.config.Name}},
-			bson.D{{Key: "$inc", Value: bson.D{{Key: "value", Value: int64(1)}}}},
-			options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&seq)
-		if mongo.IsDuplicateKeyError(err) {
-			continue
-		}
-		if err != nil {
-			return 0, err
-		}
-		if seq.Value <= 0 || seq.Value == math.MaxInt64 {
-			return 0, fmt.Errorf("自增主键溢出")
-		}
-		return seq.Value, nil
-	}
-	return 0, fmt.Errorf("序列初始化冲突，请重试")
-}
-
-func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T) (bson.M, error) {
-	if entity == nil {
-		return nil, fmt.Errorf("实体不能为空")
-	}
-	raw, err := bson.Marshal(entity)
-	if err != nil {
-		return nil, err
-	}
-	document := bson.M{}
-	if err = bson.Unmarshal(raw, &document); err != nil {
-		return nil, err
-	}
-	idValue := reflect.ValueOf(entity).Elem().FieldByName("ID")
-	if _, err := r.filter(ctx, QueryOption{}, false); err != nil {
-		return nil, err
-	}
-	if r.config.ID.Generation == "increment" {
-		value, e := r.sequence(ctx)
-		if e != nil {
-			return nil, e
-		}
-		document["_id"] = value
-	} else if idValue.IsZero() {
-		switch r.config.ID.Generation {
-		case "auto":
-			document["_id"] = bson.NewObjectID()
-		case "increment":
-			value, e := r.sequence(ctx)
-			if e != nil {
-				return nil, e
-			}
-			document["_id"] = value
-		default:
-			return nil, ErrInvalidID
-		}
-	} else {
-		id := idValue.Interface().(K)
-		if err = r.validID(id); err != nil {
-			return nil, err
-		}
-		document["_id"] = id
-	}
-	if r.config.SoftDelete {
-		document["deleted_at"] = nil
-	}
-	if r.config.Timestamps {
-		now := time.Now().UTC()
-		document["created_at"] = now
-		document["updated_at"] = now
-	}
-	if r.config.TenantField != "" {
-		value := ctx.Value(tenantKey{})
-		if value == nil || reflect.ValueOf(value).IsZero() {
-			return nil, ErrTenantRequired
-		}
-		document[r.config.TenantField] = value
-	}
-	for _, path := range []string{r.config.CreatedByField, r.config.UpdatedByField} {
-		if path != "" {
-			value := ctx.Value(actorKey{})
-			if value == nil {
-				return nil, fmt.Errorf("缺少操作人信息")
-			}
-			document[path] = value
-		}
-	}
-	return document, nil
-}
-
-// Create 新增实体；插入成功后回填主键和自动字段。
-func (r *Repository[T, K]) Create(ctx context.Context, entity *T) (err error) {
-	end := r.observe(ctx, "Create")
-	defer func() { end(err) }()
-	doc, err := r.prepareCreate(ctx, entity)
-	if err != nil {
-		return err
-	}
-	raw, err := bson.Marshal(doc)
-	if err != nil {
-		return err
-	}
-	decoded := new(T)
-	if err = bson.Unmarshal(raw, decoded); err != nil {
-		return err
-	}
-	defer r.invalidate(ctx)
-	if _, err = r.collection.InsertOne(ctx, doc); err != nil {
-		return err
-	}
-	*entity = *decoded
-	return nil
-}
-
-// CreateBatch 顺序插入文档；非事务下失败时此前文档可能已成功写入。
-func (r *Repository[T, K]) CreateBatch(ctx context.Context, entities []*T) error {
-	for _, entity := range entities {
-		if err := r.Create(ctx, entity); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // FindById 按主键获取未删除实体。
 func (r *Repository[T, K]) FindById(ctx context.Context, id K, opts ...QueryOption) (*T, error) {
 	if err := r.validID(id); err != nil {
@@ -279,7 +153,7 @@ func (r *Repository[T, K]) findOne(ctx context.Context, opts ...QueryOption) (en
 	if err != nil {
 		return nil, err
 	}
-	find := options.FindOne()
+	find := options.FindOne().SetSkip(o.skip)
 	if len(o.sort) > 0 {
 		find.SetSort(o.sort)
 	}

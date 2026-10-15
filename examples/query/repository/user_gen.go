@@ -18,5 +18,5 @@ type defaultUserRepository struct {
 
 // newDefaultUserRepository 使用生成时解析的全局/实体配置。
 func newDefaultUserRepository(db *mongoplus.Database) *defaultUserRepository {
-	return &defaultUserRepository{mongoplus.MustRepository[model.UserEntity, int64](db, mongoplus.CollectionConfig{Name: "users", ID: mongoplus.IDConfig{Type: "int64", Generation: "increment"}, SoftDelete: true, Timestamps: true, TenantField: ""})}
+	return &defaultUserRepository{mongoplus.MustRepository[model.UserEntity, int64](db, mongoplus.CollectionConfig{Name: "users", ID: mongoplus.IDConfig{Type: mongoplus.IDTypeInt64, Generation: mongoplus.IDGenerationIncrement, BlockSize: 0}, SoftDelete: true, Timestamps: true, TenantField: ""})}
 }

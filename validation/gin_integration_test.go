@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kuangshp/mongo-plus/generator"
+	"github.com/kuangshp/mongo-plus/schema"
 )
 
 // TestGinIntegration 在临时模块中编译文档原文，验证真实 Gin 绑定只校验一次。
@@ -53,6 +56,59 @@ func TestGinIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 使用真实生成器输出 DTO，再编译 README 的 Gin 控制器，避免手写替代标签。
+	configFile := filepath.Join(dir, "mongo-plus.yml")
+	config := "package: flycos\nmodel_pkg_path: internal/dal/entity\nout_path: internal/dal/dao\nrepo_path: internal/dal/repository\ndto_path: internal/dal/dto\nvo_path: internal/dal/vo\nid:\n  type: int64\n"
+	if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "schema"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, definition := range map[string]string{
+		"user":  `{"fields":[{"name":"username","type":"string","required":true},{"name":"status","type":"int64"}]}`,
+		"flags": `{"fields":[{"name":"status","type":"int64","required":true},{"name":"enabled","type":"bool","required":true},{"name":"profile","type":"object","fields":[{"name":"city","type":"string","required":true}]},{"name":"tags","type":"[]object","fields":[{"name":"name","type":"string","required":true}]},{"name":"owner","type":"objectId"},{"name":"joined_at","type":"datetime"}]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "schema", name+".json"), []byte(definition), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := schema.LoadConfig(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, controllerBlock, ok := strings.Cut(string(readme), "<!-- gin-dto-controller -->")
+	if !ok {
+		t.Fatal("缺少 README Gin 控制器示例")
+	}
+	_, controllerBlock, ok = strings.Cut(controllerBlock, "```go\n")
+	if !ok {
+		t.Fatal("缺少 Gin 控制器 Go 代码块")
+	}
+	controller, _, ok := strings.Cut(controllerBlock, "\n```")
+	if !ok {
+		t.Fatal("不完整的 Gin 控制器代码块")
+	}
+	apiDir := filepath.Join(dir, "internal/api/user")
+	if err := os.MkdirAll(apiDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, source := range map[string]string{
+		filepath.Join(apiDir, "user.go"):            strings.ReplaceAll(controller, "example.com/shop", "flycos"),
+		filepath.Join(dir, "utils/response.go"):     ginProjectResponses,
+		filepath.Join(dir, "generated_dto_test.go"): ginGeneratedDTOTests,
+	} {
+		if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	command := exec.Command("go", "test", "-mod=mod", "-race", "./...")
 	command.Dir = dir
 	command.Env = append(os.Environ(), "GOWORK=off")
@@ -60,6 +116,97 @@ func TestGinIntegration(t *testing.T) {
 		t.Fatalf("documented Gin integration failed: %v\n%s", err, output)
 	}
 }
+
+const ginProjectResponses = `package utils
+import (
+ "net/http"
+ "github.com/gin-gonic/gin"
+)
+func Success(ctx *gin.Context, data any) { ctx.JSON(http.StatusOK,gin.H{"code":0,"message":"请求成功","result":data}) }
+func Fail(ctx *gin.Context, message string) { ctx.JSON(http.StatusOK,gin.H{"code":1,"message":message,"result":nil}) }
+`
+
+const ginGeneratedDTOTests = `package fixture
+import (
+ "context"
+ "encoding/json"
+ "net/http"
+ "net/http/httptest"
+ "strings"
+ "testing"
+ userapi "flycos/internal/api/user"
+ "flycos/internal/dal/dto"
+ "flycos/internal/dal/entity"
+ "flycos/internal/dal/repository"
+ "flycos/initialize"
+ "flycos/utils"
+ "github.com/gin-gonic/gin"
+)
+type requestKey struct{}
+type fakeUserRepository struct {
+ repository.UserRepository
+ calls int
+ username string
+ status int64
+ contextValue any
+}
+func (r *fakeUserRepository) Create(ctx context.Context, record *entity.UserEntity) error {
+ r.calls++;r.username=record.Username;r.status=record.Status;r.contextValue=ctx.Value(requestKey{})
+ record.ID=42
+ return nil
+}
+func TestGeneratedDTOAndREADMEController(t *testing.T) {
+ gin.SetMode(gin.TestMode)
+ if err:=initialize.InitValidate();err!=nil {t.Fatal(err)}
+ repo:=&fakeUserRepository{}
+ api:=userapi.NewUser(repo)
+ router:=gin.New()
+ router.POST("/users",api.Create)
+ router.POST("/flags",func(ctx *gin.Context){
+  var req dto.CreateFlagsDTO
+  if err:=ctx.ShouldBindJSON(&req);err!=nil {utils.Fail(ctx,utils.ShowErrorMessage(err));return}
+  utils.Success(ctx,req)
+ })
+ router.POST("/modify",func(ctx *gin.Context){
+  var req dto.ModifyUserDTO
+  if err:=ctx.ShouldBindJSON(&req);err!=nil {utils.Fail(ctx,utils.ShowErrorMessage(err));return}
+  utils.Success(ctx,req)
+ })
+ send:=func(path,body string) map[string]any {
+  request:=httptest.NewRequest(http.MethodPost,path,strings.NewReader(body))
+  request.Header.Set("Content-Type","application/json")
+  request=request.WithContext(context.WithValue(request.Context(),requestKey{},"request-context"))
+  result:=httptest.NewRecorder();router.ServeHTTP(result,request)
+  if result.Code!=http.StatusOK {t.Fatalf("错误响应状态: %d %s",result.Code,result.Body.String())}
+  var response map[string]any
+  if err:=json.Unmarshal(result.Body.Bytes(),&response);err!=nil {t.Fatal(err)}
+  return response
+ }
+ if out:=send("/users","{\"username\":123,\"status\":\"9007199254740993\"}");out["code"]!=float64(0) {t.Fatal(out)}
+ if repo.calls!=1||repo.username!="123"||repo.status!=9007199254740993||repo.contextValue!="request-context" {t.Fatalf("DTO 转换、仓储注入或上下文错误: %+v",repo)}
+ for _,body:=range []string{"{}","{\"username\":null}","{\"username\":\"u\",\"status\":\"bad\"}","{\"username\":\"u\",\"status\":\"9223372036854775808\"}","{"} {
+  out:=send("/users",body)
+  if out["code"]!=float64(1)||out["message"]=="" {t.Fatalf("请求绑定/校验未生效: %s %v",body,out)}
+ }
+ if repo.calls!=1 {t.Fatal("错误请求仍调用仓储")}
+ out:=send("/users","{}")
+ if !strings.Contains(out["message"].(string),"username")||!strings.Contains(out["message"].(string),"必填") {t.Fatalf("中文必填提示未生效: %v",out)}
+ if out:=send("/flags","{\"status\":\"0\",\"enabled\":false,\"tags\":[],\"owner\":\"507f1f77bcf86cd799439011\",\"joined_at\":\"project-time\"}");out["code"]!=float64(0) {t.Fatalf("合法 0/false 或自定义校验被拒绝: %v",out)}
+ for _,item:=range []struct{body,field string}{
+  {"{\"enabled\":false}","status"},
+  {"{\"status\":0}","enabled"},
+  {"{\"status\":0,\"enabled\":false,\"profile\":{}}","city"},
+  {"{\"status\":0,\"enabled\":false,\"tags\":[{}]}","name"},
+  {"{\"status\":0,\"enabled\":false,\"owner\":\"bad\"}","owner"},
+  {"{\"status\":0,\"enabled\":false,\"joined_at\":\"bad\"}","joined_at"},
+ } {
+  out:=send("/flags",item.body)
+  if out["code"]!=float64(1)||!strings.Contains(out["message"].(string),item.field) {t.Fatalf("嵌套/数组/自定义字段校验失效: %s %v",item.body,out)}
+ }
+ if out:=send("/modify","{\"id\":\"12\",\"username\":\"u\",\"status\":\"0\"}");out["code"]!=float64(0)||out["result"].(map[string]any)["id"]!=float64(12) {t.Fatalf("修改 DTO ID 转换失败: %v",out)}
+ if out:=send("/modify","{\"username\":\"u\"}");out["code"]!=float64(1)||!strings.Contains(out["message"].(string),"id") {t.Fatalf("修改 DTO ID 未校验: %v",out)}
+}
+`
 
 // 以下项目规则仅用于验证文档装配和同名覆盖，不复制参考项目的业务实现。
 const ginProjectRules = `package validators
