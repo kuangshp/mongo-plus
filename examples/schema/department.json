@@ -1,0 +1,11 @@
+{
+  "comment": "部门",
+  "fields": [
+    {
+      "name": "name",
+      "type": "string",
+      "comment": "部门名称",
+      "required": true
+    }
+  ]
+}

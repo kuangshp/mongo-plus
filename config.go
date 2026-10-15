@@ -1,0 +1,189 @@
+// Package mongoplus 为官方 MongoDB v2 驱动提供类型安全查询和 Repository。
+package mongoplus
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+var (
+	ErrNotFound       = mongo.ErrNoDocuments
+	ErrUnsafeWrite    = errors.New("批量写入必须指定业务条件，或显式调用 AllowAll")
+	ErrTenantRequired = errors.New("缺少租户信息")
+	ErrInvalidID      = errors.New("主键类型或值无效")
+)
+
+// IDConfig 配置主键类型与生成方式；集合的 _id 始终映射为 Go 的 ID 字段。
+type IDConfig struct {
+	Type       string `json:"type" yaml:"type"`
+	Generation string `json:"generation" yaml:"generation"`
+}
+
+// Normalize 补全并校验主键规则。
+func (c IDConfig) Normalize() (IDConfig, error) {
+	if c.Type == "" {
+		c.Type = "objectId"
+	}
+	switch strings.ToLower(c.Type) {
+	case "objectid":
+		c.Type = "objectId"
+		if c.Generation == "" {
+			c.Generation = "auto"
+		}
+	case "int64":
+		c.Type = "int64"
+		if c.Generation == "" {
+			c.Generation = "increment"
+		}
+	case "string":
+		c.Type = "string"
+		if c.Generation == "" {
+			c.Generation = "manual"
+		}
+	default:
+		return c, fmt.Errorf("不支持的主键类型 %q", c.Type)
+	}
+	if c.Generation == "manual" || (c.Type == "objectId" && c.Generation == "auto") || (c.Type == "int64" && c.Generation == "increment") {
+		return c, nil
+	}
+	return c, fmt.Errorf("主键类型 %s 不支持生成方式 %q", c.Type, c.Generation)
+}
+
+// CollectionConfig 是生成 Repository 携带的集合规则。
+type CollectionConfig struct {
+	Name           string
+	ID             IDConfig
+	SoftDelete     bool
+	Timestamps     bool
+	TenantField    string
+	CreatedByField string
+	UpdatedByField string
+}
+
+// Config 是连接配置；URI 可通过业务项目自己的配置系统注入。
+type Config struct {
+	URI         string        `json:"uri" yaml:"uri"`
+	Database    string        `json:"database" yaml:"database"`
+	MaxPoolSize uint64        `json:"maxPoolSize" yaml:"maxPoolSize"`
+	Timeout     time.Duration `json:"-" yaml:"-"`
+}
+
+// Observation 描述一次数据库操作，默认不记录文档和敏感参数。
+type Observation struct {
+	Collection string
+	Operation  string
+	Duration   time.Duration
+	Err        error
+}
+
+// Observer 可用于接入项目的日志、慢查询或监控。
+type Observer func(context.Context, Observation)
+
+// Database 持有可复用的驱动数据库和可选监控回调。
+type Database struct {
+	native   *mongo.Database
+	cache    readCache
+	Observer Observer
+}
+
+// Connect 建立连接并 Ping；连接池由官方 Client 管理。
+func Connect(ctx context.Context, c Config) (*Database, error) {
+	if strings.TrimSpace(c.URI) == "" || strings.TrimSpace(c.Database) == "" {
+		return nil, fmt.Errorf("uri、database 不能为空")
+	}
+	opts := options.Client().ApplyURI(c.URI)
+	if c.MaxPoolSize > 0 {
+		opts.SetMaxPoolSize(c.MaxPoolSize)
+	}
+	if c.Timeout > 0 {
+		opts.SetTimeout(c.Timeout)
+	}
+	client, err := mongo.Connect(opts)
+	if err != nil {
+		return nil, err
+	}
+	pingCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		pingCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+	}
+	if err = client.Ping(pingCtx, nil); err != nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = client.Disconnect(closeCtx)
+		return nil, err
+	}
+	return NewDatabase(client.Database(c.Database)), nil
+}
+
+// NewDatabase 使用业务项目已有的官方驱动数据库；不创建连接。
+func NewDatabase(db *mongo.Database) *Database { return &Database{native: db} }
+
+// Native 返回原生数据库，供明确需要官方 API 的仓储扩展使用。
+func (d *Database) Native() *mongo.Database { return d.native }
+
+// Close 关闭 Client；由创建并拥有连接的启动入口调用。
+func (d *Database) Close(ctx context.Context) error { return d.native.Client().Disconnect(ctx) }
+
+type tenantKey struct{}
+type actorKey struct{}
+
+// WithTenant 为请求上下文设置租户；仓储从上下文读取，业务过滤不能覆盖它。
+func WithTenant(ctx context.Context, id any) context.Context {
+	return context.WithValue(ctx, tenantKey{}, id)
+}
+
+// WithActor 设置审计操作人。
+func WithActor(ctx context.Context, id any) context.Context {
+	return context.WithValue(ctx, actorKey{}, id)
+}
+
+// Transaction 执行官方 Session 事务；回调必须使用 txCtx，且可能被驱动重试。
+func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Context) error) error {
+	if mongo.SessionFromContext(ctx) != nil {
+		return fmt.Errorf("不支持嵌套 Session 事务")
+	}
+	session, err := db.native.Client().StartSession()
+	if err != nil {
+		return err
+	}
+	defer session.EndSession(ctx)
+	state := txCaches{}
+	ctx = context.WithValue(ctx, txCacheKey{}, state)
+	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) { return nil, fn(txCtx) })
+	for database, collections := range state {
+		for collection := range collections {
+			database.InvalidateCache(collection)
+		}
+	}
+	return err
+}
+
+// TransactionAs 在事务中构建业务项目自己的仓储集合，保持与 gorm-plus 类似的用法。
+func TransactionAs[Q any](ctx context.Context, db *Database, use func(context.Context) Q, fn func(Q) error) error {
+	return Transaction(ctx, db, func(txCtx context.Context) error { return fn(use(txCtx)) })
+}
+
+// DbPage 计算分页范围，与 gorm-plus 一样默认每页 10 条、最多 500 条。
+func DbPage(page, size int64) (offset, limit int64) {
+	if page < 1 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 10
+	}
+	if size > 500 {
+		size = 500
+	}
+	if page-1 > int64(^uint64(0)>>1)/size {
+		page = 1
+	}
+	return (page - 1) * size, size
+}

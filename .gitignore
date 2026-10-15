@@ -1,0 +1,6 @@
+.DS_Store
+.idea/
+.cache/
+.env
+bin/
+coverage.out

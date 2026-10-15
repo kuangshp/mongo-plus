@@ -1,0 +1,10 @@
+{
+  "comment": "订单，演示金额和分组统计",
+  "fields": [
+    {"name": "category", "type": "string", "comment": "订单分类", "required": true},
+    {"name": "status", "type": "int64", "comment": "状态：1待支付，2已支付"},
+    {"name": "quantity", "type": "int64", "comment": "数量"},
+    {"name": "amount", "type": "decimal128", "comment": "金额，使用 Decimal128 保留十进制精度"},
+    {"name": "tags", "type": "[]string", "comment": "订单标签"}
+  ]
+}

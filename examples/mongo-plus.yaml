@@ -1,0 +1,16 @@
+# 当前配置目录对应的 Go 导入前缀；业务项目放根目录时与 go.mod module 一致。
+module: github.com/kuangshp/mongo-plus/examples
+schemaDir: schema
+output: query
+
+# 主键配置一次；所有实体默认继承。
+id:
+  type: int64
+  generation: increment
+
+softDelete: true # 默认逻辑删除；实体可以覆盖为 false。
+timestamps: true # 自动生成并填充 created_at、updated_at。
+
+mongodb:
+  uri: "${MONGO_URI}"
+  database: mongo_plus_demo

@@ -1,0 +1,22 @@
+{
+  "comment": "用户",
+  "fields": [
+    {
+      "name": "username",
+      "type": "string",
+      "comment": "用户名",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "status",
+      "type": "int64",
+      "comment": "状态：1正常，2禁用"
+    },
+    {
+      "name": "dept_id",
+      "type": "int64",
+      "comment": "所属部门 ID"
+    }
+  ]
+}
