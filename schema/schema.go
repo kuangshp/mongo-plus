@@ -13,21 +13,30 @@ import (
 	"sort"
 	"strings"
 
-	mongoplus "github.com/kuangshp/mongo-plus"
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"gopkg.in/yaml.v3"
 )
 
 // Config 是 mongo-plus.yaml；全局主键只需配置一次。
 type Config struct {
-	Module     string             `yaml:"module" json:"module"`
-	SchemaDir  string             `yaml:"schemaDir" json:"schemaDir"`
-	Output     string             `yaml:"output" json:"output"`
-	ID         mongoplus.IDConfig `yaml:"id" json:"id"`
-	SoftDelete *bool              `yaml:"softDelete" json:"softDelete"`
-	Timestamps *bool              `yaml:"timestamps" json:"timestamps"`
-	Tenant     *Tenant            `yaml:"tenant" json:"tenant"`
-	MongoDB    mongoplus.Config   `yaml:"mongodb" json:"mongodb"`
+	// Package 与 gorm-plus 的 GeneratorConfig.Package 含义相同；Module 为旧配置兼容字段。
+	Package   string `yaml:"package" json:"package"`
+	Module    string `yaml:"module" json:"module"`
+	SchemaDir string `yaml:"schemaDir" json:"schemaDir"`
+	Output    string `yaml:"output" json:"output"`
+	// 可分别指定输出位置；未填写时沿用 Output 下的 model/dao/repository。
+	ModelPkgPath string `yaml:"model_pkg_path" json:"modelPkgPath"`
+	OutPath      string `yaml:"out_path" json:"outPath"`
+	RepoPath     string `yaml:"repo_path" json:"repoPath"`
+	// DTO/VO 与 gorm-plus 一样按需生成；留空时不生成，首次创建后保留业务修改。
+	DtoPath    string            `yaml:"dto_path" json:"dtoPath"`
+	VoPath     string            `yaml:"vo_path" json:"voPath"`
+	ID         settings.IDConfig `yaml:"id" json:"id"`
+	SoftDelete *bool             `yaml:"softDelete" json:"softDelete"`
+	Timestamps *bool             `yaml:"timestamps" json:"timestamps"`
+	Tenant     *Tenant           `yaml:"tenant" json:"tenant"`
+	MongoDB    settings.Config   `yaml:"mongodb" json:"mongodb"`
 	base       string
 }
 
@@ -39,18 +48,18 @@ type Tenant struct {
 
 // Entity 对应一个 schema/*.json 文件；ID/SoftDelete/Timestamps 可以覆盖全局默认。
 type Entity struct {
-	Entity        string              `json:"entity,omitempty"`
-	Collection    string              `json:"collection,omitempty"`
-	Comment       string              `json:"comment,omitempty"`
-	ID            *mongoplus.IDConfig `json:"id,omitempty"`
-	SoftDelete    *bool               `json:"softDelete,omitempty"`
-	Timestamps    *bool               `json:"timestamps,omitempty"`
-	Fields        []Field             `json:"fields"`
-	Indexes       []Index             `json:"indexes,omitempty"`
-	Tenant        *Tenant             `json:"tenant,omitempty"`
-	Source        string              `json:"-"`
-	ExternalModel bool                `json:"-"`
-	ModelPackage  string              `json:"-"`
+	Entity        string             `json:"entity,omitempty"`
+	Collection    string             `json:"collection,omitempty"`
+	Comment       string             `json:"comment,omitempty"`
+	ID            *settings.IDConfig `json:"id,omitempty"`
+	SoftDelete    *bool              `json:"softDelete,omitempty"`
+	Timestamps    *bool              `json:"timestamps,omitempty"`
+	Fields        []Field            `json:"fields"`
+	Indexes       []Index            `json:"indexes,omitempty"`
+	Tenant        *Tenant            `json:"tenant,omitempty"`
+	Source        string             `json:"-"`
+	ExternalModel bool               `json:"-"`
+	ModelPackage  string             `json:"-"`
 }
 
 // Field 用 name/type 声明字段，其他配置均可省略。
@@ -119,8 +128,14 @@ func (c *Config) Normalize() error {
 			return err
 		}
 	}
+	if c.Package != "" {
+		if c.Module != "" && c.Module != c.Package {
+			return fmt.Errorf("package 与 module 必须保持一致")
+		}
+		c.Module = c.Package
+	}
 	if c.Module == "" || strings.ContainsAny(c.Module, " \t\n\\\"`") || strings.HasPrefix(c.Module, "/") {
-		return fmt.Errorf("module 必须是业务项目的 Go module 路径")
+		return fmt.Errorf("Package（兼容 YAML 的 module）必须是业务项目的 Go module 路径")
 	}
 	if c.SchemaDir == "" {
 		c.SchemaDir = "schema"
@@ -137,6 +152,34 @@ func (c *Config) Normalize() error {
 	rel, err := filepath.Rel(c.base, c.Output)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == "." {
 		return fmt.Errorf("output 必须是业务项目中的子目录")
+	}
+	seen := map[string]bool{}
+	for _, target := range []struct {
+		path  *string
+		child string
+	}{{&c.ModelPkgPath, "model"}, {&c.OutPath, "dao"}, {&c.RepoPath, "repository"}, {&c.DtoPath, "dto"}, {&c.VoPath, "vo"}} {
+		if *target.path == "" && (target.child == "dto" || target.child == "vo") {
+			continue
+		}
+		if *target.path == "" {
+			*target.path = filepath.Join(c.Output, target.child)
+		}
+		if !filepath.IsAbs(*target.path) {
+			*target.path = filepath.Join(c.base, *target.path)
+		}
+		*target.path = filepath.Clean(*target.path)
+		rel, err := filepath.Rel(c.base, *target.path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%s 输出必须是业务项目中的子目录", target.child)
+		}
+		name := filepath.Base(*target.path)
+		if !token.IsIdentifier(name) || token.Lookup(name).IsKeyword() || name == "_" {
+			return fmt.Errorf("输出目录 %q 不是有效 Go 包名", name)
+		}
+		if seen[*target.path] {
+			return fmt.Errorf("Entity、DAO、Repository、DTO、VO 输出目录不能相同")
+		}
+		seen[*target.path] = true
 	}
 	c.ID, err = c.ID.Normalize()
 	if err != nil {
@@ -161,9 +204,29 @@ func (c Config) BaseDir() string { return c.base }
 
 // ImportPath 返回输出目录内包的导入路径。
 func (c Config) ImportPath(pkg string) string {
-	rel, _ := filepath.Rel(c.base, c.Output)
-	return c.Module + "/" + filepath.ToSlash(rel) + "/" + pkg
+	rel, _ := filepath.Rel(c.base, c.PackageDir(pkg))
+	return c.Module + "/" + filepath.ToSlash(rel)
 }
+
+// PackageDir 返回数据层输出目录；应先 Normalize。未启用的 DTO/VO 返回空字符串。
+func (c Config) PackageDir(pkg string) string {
+	switch pkg {
+	case "model":
+		return c.ModelPkgPath
+	case "dao":
+		return c.OutPath
+	case "repository":
+		return c.RepoPath
+	case "dto":
+		return c.DtoPath
+	case "vo":
+		return c.VoPath
+	}
+	return filepath.Join(c.Output, pkg)
+}
+
+// PackageName 与输出目录保持一致，例如 ModelPkgPath 为 internal/dal/entity 时使用 entity 包。
+func (c Config) PackageName(pkg string) string { return filepath.Base(c.PackageDir(pkg)) }
 
 // Bool 创建可覆盖全局默认的布尔指针。
 func Bool(value bool) *bool { return &value }
@@ -423,8 +486,8 @@ func (e Entity) fieldType(path string) string {
 }
 
 // Runtime 返回生成 Repository 使用的运行配置。
-func (e Entity) Runtime() mongoplus.CollectionConfig {
-	c := mongoplus.CollectionConfig{Name: e.Collection, ID: *e.ID, SoftDelete: *e.SoftDelete, Timestamps: *e.Timestamps}
+func (e Entity) Runtime() settings.CollectionConfig {
+	c := settings.CollectionConfig{Name: e.Collection, ID: *e.ID, SoftDelete: *e.SoftDelete, Timestamps: *e.Timestamps}
 	if e.Tenant != nil {
 		c.TenantField = e.Tenant.Name
 	}

@@ -109,3 +109,28 @@ func TestUnknownConfigAndPathEscape(t *testing.T) {
 		t.Fatalf("未知配置被忽略 %v", err)
 	}
 }
+
+func TestIndependentOutputConfigValidation(t *testing.T) {
+	for name, change := range map[string]func(*Config){
+		"module conflict":       func(c *Config) { c.Package = "example.com/other" },
+		"model outside":         func(c *Config) { c.ModelPkgPath = filepath.Join(c.BaseDir(), "..", "outside") },
+		"dao outside":           func(c *Config) { c.OutPath = filepath.Join(c.BaseDir(), "..", "outside") },
+		"repository outside":    func(c *Config) { c.RepoPath = filepath.Join(c.BaseDir(), "..", "outside") },
+		"dto outside":           func(c *Config) { c.DtoPath = filepath.Join(c.BaseDir(), "..", "outside") },
+		"vo outside":            func(c *Config) { c.VoPath = filepath.Join(c.BaseDir(), "..", "outside") },
+		"dto duplicate":         func(c *Config) { c.DtoPath = c.OutPath },
+		"dto vo duplicate":      func(c *Config) { c.DtoPath, c.VoPath = "transport", "transport" },
+		"vo keyword":            func(c *Config) { c.VoPath = "type" },
+		"duplicate directories": func(c *Config) { c.RepoPath = c.OutPath },
+		"keyword package":       func(c *Config) { c.ModelPkgPath = filepath.Join(c.BaseDir(), "type") },
+		"invalid package":       func(c *Config) { c.OutPath = filepath.Join(c.BaseDir(), "my-dao") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := testConfig(t, map[string]string{"user": `{"fields":[]}`})
+			change(&c)
+			if err := c.Normalize(); err == nil {
+				t.Fatal("接受了无效生成配置")
+			}
+		})
+	}
+}

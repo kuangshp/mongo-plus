@@ -6,7 +6,7 @@ import (
 )
 
 func TestCLIRejectsInvalidCommands(t *testing.T) {
-	for _, args := range [][]string{{"unknown"}, {"schema"}, {"schema", "drop"}, {"generate", "--typo"}, {"generate", "extra"}, {"check", "--timeout=-1s"}} {
+	for _, args := range [][]string{{"unknown"}, {"schema"}, {"schema", "drop"}, {"generate", "--typo"}, {"generate", "extra"}, {"check", "--timeout=-1s"}, {"goctl"}, {"export-goctl-templates"}, {"export-goctl-templates", "--output", t.TempDir(), "extra"}, {"swagger", "--timeout=-1s"}, {"swagger-open", "extra"}} {
 		var out bytes.Buffer
 		if err := run(args, &out, &out); err == nil {
 			t.Fatalf("允许无效命令 %v", args)

@@ -1,0 +1,16 @@
+# 可选的 YAML；generator.go 已用 Go 配置生成代码，此文件主要用于显式 schema plan/apply。
+package: github.com/kuangshp/mongo-plus/examples/gozero
+schemaDir: schema
+model_pkg_path: internal/dal/entity
+out_path: internal/dal/dao
+repo_path: internal/dal/repository
+dto_path: internal/dal/dto
+vo_path: internal/dal/vo
+id:
+  type: int64
+  generation: increment
+softDelete: true
+timestamps: true
+mongodb:
+  uri: "${MONGO_URI}"
+  database: mongo_plus_gozero_demo

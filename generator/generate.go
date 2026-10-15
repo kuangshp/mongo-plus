@@ -59,14 +59,28 @@ func GenerateEntities(c schema.Config, entities []schema.Entity) ([]string, erro
 		if entity.ExternalModel {
 			modelImport = entity.ModelPackage
 		}
-		model, dao, repo, extension, err := render(entity, modelImport)
+		model, dao, repo, extension, err := render(entity, modelImport, c)
 		if err != nil {
 			return nil, err
 		}
 		if !entity.ExternalModel {
-			outputs = append(outputs, output{filepath.Join(c.Output, "model", base+"_entity.go"), model, false})
+			outputs = append(outputs, output{filepath.Join(c.ModelPkgPath, base+"_entity.go"), model, false})
 		}
-		outputs = append(outputs, output{filepath.Join(c.Output, "dao", base+"_fields_gen.go"), dao, false}, output{filepath.Join(c.Output, "repository", base+"_gen.go"), repo, false}, output{filepath.Join(c.Output, "repository", base+".go"), extension, true})
+		outputs = append(outputs, output{filepath.Join(c.OutPath, base+"_fields_gen.go"), dao, false}, output{filepath.Join(c.RepoPath, base+"_gen.go"), repo, false}, output{filepath.Join(c.RepoPath, base+".go"), extension, true})
+		if c.DtoPath != "" {
+			dto, err := renderDTO(entity, c)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, output{filepath.Join(c.DtoPath, base+"_dto.go"), dto, true})
+		}
+		if c.VoPath != "" {
+			vo, err := renderVO(entity, modelImport, c)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, output{filepath.Join(c.VoPath, base+"_vo.go"), vo, true})
+		}
 	}
 	// 所有文件先渲染/格式校验；生成文件带标记，拒绝覆盖同名手写文件。
 	for _, out := range outputs {
@@ -118,7 +132,7 @@ func writeAtomic(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
-func render(e schema.Entity, modelImport string) (model, dao, repo, extension []byte, err error) {
+func render(e schema.Entity, modelImport string, c schema.Config) (model, dao, repo, extension []byte, err error) {
 	root := e.Entity
 	fields := effectiveFields(e)
 	var models strings.Builder
@@ -139,7 +153,7 @@ func render(e schema.Entity, modelImport string) (model, dao, repo, extension []
 	for _, f := range fields {
 		renderNested(&models, f, root+f.GoName)
 	}
-	model, err = source("model", models.String(), nil)
+	model, err = source(c.PackageName("model"), models.String(), nil)
 	if err != nil {
 		return
 	}
@@ -194,7 +208,7 @@ func render(e schema.Entity, modelImport string) (model, dao, repo, extension []
 		fmt.Fprintf(&daos, "%s: %s(%q),\n", f.name, f.constructor, f.path)
 	}
 	daos.WriteString("}\n")
-	dao, err = source("dao", daos.String(), map[string]string{"field": "github.com/kuangshp/mongo-plus/field", "model": modelImport})
+	dao, err = source(c.PackageName("dao"), daos.String(), map[string]string{"field": "github.com/kuangshp/mongo-plus/field", "model": modelImport})
 	if err != nil {
 		return
 	}
@@ -204,13 +218,13 @@ func render(e schema.Entity, modelImport string) (model, dao, repo, extension []
 	fmt.Fprintf(&repos, "// iDefault%sRepository 的基础方法签名随生成代码更新。\ntype iDefault%sRepository interface { mongoplus.Contract[model.%s,%s] }\n", name, name, root, idType)
 	fmt.Fprintf(&repos, "// default%sRepository 实现生成的基础仓储，业务扩展在同名非生成文件。\ntype default%sRepository struct {\n *mongoplus.Repository[model.%s, %s]\n}\n", name, name, root, idType)
 	fmt.Fprintf(&repos, "// newDefault%sRepository 使用生成时解析的全局/实体配置。\nfunc newDefault%sRepository(db *mongoplus.Database) *default%sRepository {\n return &default%sRepository{mongoplus.MustRepository[model.%s,%s](db,mongoplus.CollectionConfig{Name:%q,ID:mongoplus.IDConfig{Type:%q,Generation:%q},SoftDelete:%t,Timestamps:%t,TenantField:%q})}\n}\n", name, name, name, name, root, idType, e.Collection, e.ID.Type, e.ID.Generation, *e.SoftDelete, *e.Timestamps, e.Runtime().TenantField)
-	repo, err = source("repository", repos.String(), map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
+	repo, err = source(c.PackageName("repository"), repos.String(), map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
 	if err != nil {
 		return
 	}
 	// 将接口的泛型基础方法集中维护在运行时 Contract，避免生成文件反复复制方法签名。
 	ext := fmt.Sprintf("// %[1]sRepository 是业务扩展接口；此文件首次创建后不再覆盖。\ntype %[1]sRepository interface {\n iDefault%[1]sRepository\n}\n\ntype custom%[1]sRepository struct { *default%[1]sRepository }\n\nvar _ %[1]sRepository = (*custom%[1]sRepository)(nil)\n\n// New%[1]sRepository 创建仓储并复用传入的数据库连接。\nfunc New%[1]sRepository(db *mongoplus.Database) %[1]sRepository {\n return &custom%[1]sRepository{newDefault%[1]sRepository(db)}\n}\n", name)
-	extension, err = source("repository", ext, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
+	extension, err = source(c.PackageName("repository"), ext, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus", "model": modelImport})
 	if err == nil {
 		extension = bytes.Replace(extension, []byte(generated), nil, 1)
 	}

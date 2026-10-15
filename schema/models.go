@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	mongoplus "github.com/kuangshp/mongo-plus"
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -14,7 +14,7 @@ import (
 type Model struct {
 	Value      any
 	Collection string
-	ID         *mongoplus.IDConfig
+	ID         *settings.IDConfig
 	SoftDelete *bool
 	Timestamps *bool
 	Comment    string

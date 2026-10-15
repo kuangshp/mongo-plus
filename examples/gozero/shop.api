@@ -1,0 +1,25 @@
+syntax = "v1"
+
+info (
+    title: "mongo-plus go-zero 模板示例"
+    desc: "参数兼容转换、中文校验和统一响应；业务逻辑在生成后实现"
+    version: "1.0"
+)
+
+type CheckReq {
+    Id int64 `json:"id" validate:"required,gt=0"`
+    Amount string `json:"amount" validate:"required,decimal"`
+    Mobile string `json:"mobile" validate:"required,checkMobile"`
+    StartTime string `json:"startTime,optional" validate:"omitempty,dateTime"`
+    DocumentID string `json:"documentId,optional" validate:"omitempty,objectId"`
+}
+
+type CheckResp {
+    Id int64 `json:"id"`
+    Amount string `json:"amount"`
+}
+
+service shop-api {
+    @handler Check
+    post /demo/check (CheckReq) returns (CheckResp)
+}

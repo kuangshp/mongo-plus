@@ -2,7 +2,7 @@
 
 # 所有命令默认在 mongo-plus 项目根目录运行，不需要先安装工具。
 gen:
-	go run ./cmd/mongoplus generate --config examples/mongo-plus.yaml
+	go run generator.go
 
 check:
 	go run ./cmd/mongoplus check --config examples/mongo-plus.yaml
