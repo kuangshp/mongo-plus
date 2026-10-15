@@ -25,6 +25,8 @@ type Config struct {
 	Module    string `yaml:"module" json:"module"`
 	SchemaDir string `yaml:"schemaDir" json:"schemaDir"`
 	Output    string `yaml:"output" json:"output"`
+	// Pluralize 为 true 时给自动推导的集合名追加 s；false（默认）不追加。
+	Pluralize bool `yaml:"pluralize" json:"pluralize"`
 	// 可分别指定输出位置；未填写时沿用 Output 下的 model/dao/repository。
 	ModelPkgPath string `yaml:"model_pkg_path" json:"modelPkgPath"`
 	OutPath      string `yaml:"out_path" json:"outPath"`
@@ -111,13 +113,24 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	c.MongoDB.URI = os.ExpandEnv(c.MongoDB.URI)
+	c.MongoDB.Database = os.ExpandEnv(c.MongoDB.Database)
+	// 区分省略数据源与显式填写了空配置；环境变量展开后为空不能悄悄跳过同步。
+	var sections map[string]yaml.Node
+	if err = yaml.Unmarshal(data, &sections); err != nil {
+		return c, err
+	}
+	if node, exists := sections["mongodb"]; exists && node.Tag != "!!null" && !c.HasMongoDB() {
+		return c, fmt.Errorf("已配置 mongodb，uri、database 不能为空")
+	}
 	if err = c.Normalize(); err != nil {
 		return c, err
 	}
-	c.MongoDB.URI = os.ExpandEnv(c.MongoDB.URI)
-	c.MongoDB.Database = os.ExpandEnv(c.MongoDB.Database)
 	return c, nil
 }
+
+// HasMongoDB 表示生成器是否提供数据源；未提供时只生成代码。
+func (c Config) HasMongoDB() bool { return c.MongoDB != (settings.Config{}) }
 
 // Normalize 补全路径和全局默认；逻辑删除、时间字段默认开启。
 func (c *Config) Normalize() error {
@@ -136,6 +149,9 @@ func (c *Config) Normalize() error {
 	}
 	if c.Module == "" || strings.ContainsAny(c.Module, " \t\n\\\"`") || strings.HasPrefix(c.Module, "/") {
 		return fmt.Errorf("Package（兼容 YAML 的 module）必须是业务项目的 Go module 路径")
+	}
+	if c.HasMongoDB() && (strings.TrimSpace(c.MongoDB.URI) == "" || strings.TrimSpace(c.MongoDB.Database) == "") {
+		return fmt.Errorf("已配置 mongodb，uri、database 不能为空")
 	}
 	if c.SchemaDir == "" {
 		c.SchemaDir = "schema"
@@ -278,13 +294,16 @@ func LoadEntities(c Config) ([]Entity, error) {
 // Normalize 合并全局默认，并校验字段、索引和生成名称冲突。
 func (e *Entity) Normalize(c Config, filename string) error {
 	if e.Entity == "" {
-		e.Entity = GoName(filename) + "Entity"
+		e.Entity = GoName(SnakeName(filename)) + "Entity"
 	}
 	if !token.IsIdentifier(e.Entity) || !token.IsExported(e.Entity) {
 		return fmt.Errorf("无效 Entity 名称 %q", e.Entity)
 	}
 	if e.Collection == "" {
-		e.Collection = filename + "s"
+		e.Collection = SnakeName(filename)
+		if c.Pluralize {
+			e.Collection += "s"
+		}
 	}
 	if e.Collection == "" || strings.ContainsAny(e.Collection, "\x00$") || strings.HasPrefix(e.Collection, "system.") || e.Collection == "__mongo_plus_sequences" {
 		return fmt.Errorf("无效集合名称 %q", e.Collection)

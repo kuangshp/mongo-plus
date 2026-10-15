@@ -30,7 +30,7 @@ func TestSchemaApplyAndIdempotency(t *testing.T) {
 	if changes, err = Plan(ctx, db, entities); err != nil || len(changes) != 0 {
 		t.Fatalf("同步不幂等 %+v %v", changes, err)
 	}
-	users := db.Collection("users")
+	users := db.Collection(entities[0].Collection)
 	if _, err = users.InsertOne(ctx, bson.M{"_id": int64(1), "username": "one", "status": int64(0)}); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestIndexConflictAndActiveOnly(t *testing.T) {
 	if _, err = Apply(ctx, db, entities); err != nil {
 		t.Fatal(err)
 	}
-	users := db.Collection("users")
+	users := db.Collection(entities[0].Collection)
 	if _, err = users.InsertOne(ctx, bson.M{"_id": int64(1), "username": "one", "deleted_at": nil}); err != nil {
 		t.Fatal(err)
 	}

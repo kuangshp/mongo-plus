@@ -8,7 +8,7 @@ install-tools:
 validate: install-tools
 	goctl api validate --api shop.api
 
-# schema 生成数据层，.api 生成 HTTP 层；均不会连接或修改 MongoDB。
+# 读取 YAML；配置 mongodb 时先同步数据库，再生成数据层和 HTTP 层。
 gen: validate
 	go run generator.go
 	mongoplus goctl api go --api shop.api --dir . --style=goZero
@@ -27,7 +27,7 @@ build: swagger
 	mkdir -p bin
 	go build -o bin/shop .
 
-# 只有显式执行这两个命令才连接数据库；启动服务不自动创建集合或同步索引。
+# 配置 mongodb 后可单独预览或同步；启动服务不自动同步结构。
 schema-plan:
 	mongoplus schema plan --config mongo-plus.yaml
 

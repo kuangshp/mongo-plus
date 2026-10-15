@@ -134,3 +134,44 @@ func TestIndependentOutputConfigValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestOptionalMongoDBConfig(t *testing.T) {
+	t.Setenv("MONGO_PLUS_TEST_MISSING_URI", "")
+	t.Setenv("MONGO_PLUS_TEST_MISSING_DB", "")
+	t.Setenv("MONGO_PLUS_TEST_CONFIG_URI", "mongodb://127.0.0.1:27017")
+	t.Setenv("MONGO_PLUS_TEST_CONFIG_DB", "shop")
+	for _, item := range []struct {
+		name, yaml          string
+		configured, invalid bool
+	}{
+		{"omitted", "", false, false},
+		{"null", "mongodb: null\n", false, false},
+		{"complete", "mongodb:\n  uri: mongodb://127.0.0.1:27017\n  database: shop\n", true, false},
+		{"env", "mongodb:\n  uri: ${MONGO_PLUS_TEST_CONFIG_URI}\n  database: ${MONGO_PLUS_TEST_CONFIG_DB}\n", true, false},
+		{"empty", "mongodb: {}\n", false, true},
+		{"uri only", "mongodb:\n  uri: mongodb://127.0.0.1:27017\n", true, true},
+		{"database only", "mongodb:\n  database: shop\n", true, true},
+		{"options only", "mongodb:\n  maxPoolSize: 100\n", true, true},
+		{"missing env", "mongodb:\n  uri: ${MONGO_PLUS_TEST_MISSING_URI}\n  database: ${MONGO_PLUS_TEST_MISSING_DB}\n", false, true},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "generator.yml")
+			if err := os.WriteFile(path, []byte("package: example.com/shop\n"+item.yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := LoadConfig(path)
+			if item.invalid {
+				if err == nil || !strings.Contains(err.Error(), "uri、database") {
+					t.Fatalf("不完整数据源未报错: %v", err)
+				}
+				return
+			}
+			if err != nil || c.HasMongoDB() != item.configured {
+				t.Fatalf("可选数据源判断不正确 %+v %v", c, err)
+			}
+			if item.configured && (c.MongoDB.URI != "mongodb://127.0.0.1:27017" || c.MongoDB.Database != "shop") {
+				t.Fatal("数据源读取或环境变量展开失败")
+			}
+		})
+	}
+}

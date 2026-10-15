@@ -44,7 +44,7 @@ func GenerateEntities(c schema.Config, entities []schema.Entity) ([]string, erro
 	outputs := []output{}
 	seen := map[string]bool{}
 	for _, entity := range entities {
-		if err := entity.Normalize(c, strings.ToLower(strings.TrimSuffix(entity.Entity, "Entity"))); err != nil {
+		if err := entity.Normalize(c, strings.TrimSuffix(entity.Entity, "Entity")); err != nil {
 			return nil, err
 		}
 		if entity.ExternalModel && entity.ModelPackage == "" {

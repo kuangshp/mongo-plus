@@ -34,10 +34,16 @@ func LoadGeneratorConfig(path string) (*GeneratorConfig, error) {
 
 // Generate 根据 JSON 定义生成 Entity、DAO、Repository，以及按需配置的 DTO/VO。
 // Go 配置中的相对路径以当前工作目录为基准；YAML 配置以文件所在目录为基准。
-// 不连接数据库、不执行 schema apply，已有 Repository 扩展、DTO、VO 会被保留。
+// 配置 MongoDB 时先同步集合、校验器和索引；不配置则只生成文件。
+// 同步失败会停止；已有 Repository 扩展、DTO、VO 会被保留。
 func Generate(c *GeneratorConfig) error {
 	if c == nil {
 		return fmt.Errorf("GeneratorConfig 不能为空")
+	}
+	if c.HasMongoDB() {
+		if _, err := SyncSchema(context.Background(), c); err != nil {
+			return err
+		}
 	}
 	_, err := generator.Generate(*c)
 	return err
@@ -47,6 +53,11 @@ func Generate(c *GeneratorConfig) error {
 func GenerateModels(c *GeneratorConfig, models ...GeneratorModel) error {
 	if c == nil {
 		return fmt.Errorf("GeneratorConfig 不能为空")
+	}
+	if c.HasMongoDB() {
+		if _, err := SyncModels(context.Background(), c, models...); err != nil {
+			return err
+		}
 	}
 	_, err := generator.GenerateModels(*c, models...)
 	return err

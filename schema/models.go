@@ -84,7 +84,7 @@ func FromModels(c Config, models ...Model) ([]Entity, error) {
 		if !idFound {
 			return nil, fmt.Errorf("%s 缺少 bson:\"_id\" 主键字段", typ.Name())
 		}
-		if err = e.Normalize(c, strings.ToLower(strings.TrimSuffix(typ.Name(), "Entity"))); err != nil {
+		if err = e.Normalize(c, strings.TrimSuffix(typ.Name(), "Entity")); err != nil {
 			return nil, err
 		}
 		id, _ := typ.FieldByName("ID")

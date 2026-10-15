@@ -30,42 +30,24 @@ go install github.com/zeromicro/go-zero/tools/goctl@v1.10.2
 shop/
 ├── shop.api                 # 请求、响应和路由协议。
 ├── generator.go             # 公共包生成入口，配置与 gorm-plus 使用方式一致。
-├── mongo-plus.yaml          # 可选；主要用于显式 schema plan/apply。
+├── mongo-plus.yml           # 生成配置，mongodb 数据源可选。
 ├── schema/user.json         # 数据模型。
 ├── etc/shop-api.yaml        # 生成后的 HTTP 服务运行配置。
 ├── internal/dal/            # Entity、DAO、Repository、DTO、VO。
 └── Makefile
 ```
 
-将 README 中的 [generator.go](../README.md#1-全局配置一次实体按需覆盖) 复制到业务项目根目录，Package 与 go.mod 的 module 一致，ModelPkgPath、OutPath、RepoPath、DtoPath、VoPath 分别指定输出位置。普通代码生成不要求 YAML。
+将 README 中的 [generator.go 和 mongo-plus.yml](../README.md#1-全局配置一次实体按需覆盖) 复制到业务项目根目录。Package 与 go.mod 的 module 一致，输出路径、ID、逻辑删除等均在 YAML 配置，不需要在 Go 文件重复定义。
 
-需要使用 schema plan/apply 或偏好 YAML 时，可以保存可选配置：
-
-```yaml
-package: example.com/shop
-schemaDir: schema
-model_pkg_path: internal/dal/entity
-out_path: internal/dal/dao
-repo_path: internal/dal/repository
-dto_path: internal/dal/dto
-vo_path: internal/dal/vo
-id:
-  type: int64
-  generation: increment
-softDelete: true
-timestamps: true
-mongodb:
-  uri: "${MONGO_URI}"
-  database: shop
-```
-
-先生成数据层，再生成 HTTP 层，两步都不连接数据库：
+`pluralize: false` 表示 user、sys_user；`pluralize: true` 表示 users、sys_users。不填写 mongodb 时只生成代码；填写完整数据源后，执行同一条命令会先创建/同步集合、索引、校验器，再生成文件。数据源不完整或连接失败会停止。生成器与服务运行时 MongoConfig 应读取同一个项目的数据源，但生成器不会把连接串写入 Entity、Repository。
 
 ```bash
 go run generator.go
 mongoplus goctl api go --api shop.api --dir . --style=goZero
 go mod tidy
 ```
+
+仓库内的 examples/gozero 使用 mongo-plus.yaml（同样是 YAML），generator.go 默认路径与该文件一致；可以通过 -config 指定其他 .yml/.yaml。
 
 也支持 `mongoplus goctl api new shop --style=goZero` 创建新服务。自定义模板可以通过原有 `--home` 指定；导出内嵌模板则执行：
 
@@ -114,6 +96,8 @@ if validation.HasRules(&req) {
 `decimal` 是校验规则，用于非负、至多两位小数字符串；它与自动类型兼容是两回事。更高精度的金额需使用项目自定义规则。嵌套数组验证可写 `validate:"required,dive"`，元素结构体内继续声明字段规则。
 
 ObjectID 请求使用 string，`objectId` 校验 24 位十六进制格式；通过后用 `bson.ObjectIDFromHex(req.DocumentID)` 解析。金额通过 `bson.ParseDecimal128(req.Amount)` 解析；两者都处理解析错误。DTO/VO 不直接复用数据库 Entity。
+
+配置 `DtoPath`、`VoPath` 后，公共包生成器还会创建 `dto/user_dto.go`（CreateUserDTO、ModifyUserDTO）与 `vo/user_vo.go`（UserVO）。它们仅首次创建，后续保留业务修改。VO 保留 BSON 标签，可以直接传入 Repository 的 Scan/ScanByPage；DTO 将 ObjectID、金额、时间转换为请求用字符串，并生成数字兼容解码方法。`.api` 仍负责 go-zero HTTP 契约和 types，DTO 不会自动替换 goctl 的类型，业务可按需映射。完整的字段规则见 [DTO 与 VO](../README.md#dto-与-vo)。
 
 可空请求字段同时考虑 go-zero 的 `json:",optional"` 和校验器的 `omitempty`；数字允许 0 时不能用 `required` 表示“必须出现”，应根据协议使用指针区分缺失与零值。
 
@@ -164,7 +148,7 @@ if err != nil {
 }
 ```
 
-复杂关联、统计与事务放在非生成的 Repository 扩展中，继续传递请求 ctx 或 Transaction 提供的 txCtx。main 在服务结束时先 Stop HTTP，再通过 ServiceContext.Close 释放 Client。集合、校验器和索引仅在显式执行 schema plan/apply 时检查或同步，不随服务启动自动迁移。
+复杂关联、统计与事务放在非生成的 Repository 扩展中，继续传递请求 ctx 或 Transaction 提供的 txCtx。main 在服务结束时先 Stop HTTP，再通过 ServiceContext.Close 释放 Client。集合、校验器和索引可在配置了数据源的代码生成阶段同步，或单独使用 schema plan/apply 预览和执行；不随服务启动自动迁移。
 
 ## 5. Makefile：生成、启动与构建
 

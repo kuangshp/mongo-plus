@@ -1,11 +1,10 @@
-// examples 展示生成后的 Repository 用法；先执行 make gen 和 make schema-apply。
+// examples 展示生成后的 Repository 用法；在 examples/mongo-plus.yaml 填写数据源后先执行 make gen。
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	mongoplus "github.com/kuangshp/mongo-plus"
@@ -23,7 +22,11 @@ type UserDepartmentVO struct {
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	db, err := mongoplus.Connect(ctx, mongoplus.Config{URI: os.Getenv("MONGO_URI"), Database: "mongo_plus_demo"})
+	cfg, err := mongoplus.LoadGeneratorConfig("examples/mongo-plus.yaml")
+	if err != nil {
+		log.Fatal(err)
+	}
+	db, err := mongoplus.Connect(ctx, cfg.MongoDB)
 	if err != nil {
 		log.Fatal(err)
 	}

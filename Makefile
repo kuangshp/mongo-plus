@@ -1,6 +1,7 @@
 .PHONY: gen check test integration vet build schema-plan schema-apply example statistics-example
 
 # 所有命令默认在 mongo-plus 项目根目录运行，不需要先安装工具。
+# 从 YAML 读取配置；配置 mongodb 时先同步数据库，否则只生成文件。
 gen:
 	go run generator.go
 
@@ -31,6 +32,6 @@ schema-apply:
 example:
 	go run ./examples
 
-# 订单分组、Decimal128 金额统计、数组展开；先执行 schema-apply。
+# 订单分组、Decimal128 金额统计、数组展开；配置 YAML 数据源后先执行 gen。
 statistics-example:
 	go run ./examples/statistics

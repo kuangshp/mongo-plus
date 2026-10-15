@@ -115,6 +115,13 @@ func run(args []string, out, errOut io.Writer) error {
 		return err
 	}
 	if command == "generate" {
+		if c.HasMongoDB() {
+			ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+			defer cancel()
+			if _, err := mongoplus.SyncSchema(ctx, &c); err != nil {
+				return err
+			}
+		}
 		files, err := generator.Generate(c)
 		if err != nil {
 			return err

@@ -1,11 +1,10 @@
-// statistics 演示链式聚合；先在项目根目录执行 make gen 和 make schema-apply。
+// statistics 演示链式聚合；在 examples/mongo-plus.yaml 填写数据源后先执行 make gen。
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	mp "github.com/kuangshp/mongo-plus"
@@ -32,7 +31,11 @@ func main() {
 func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	db, err := mp.Connect(ctx, mp.Config{URI: os.Getenv("MONGO_URI"), Database: "mongo_plus_demo"})
+	cfg, err := mp.LoadGeneratorConfig("examples/mongo-plus.yaml")
+	if err != nil {
+		return err
+	}
+	db, err := mp.Connect(ctx, cfg.MongoDB)
 	if err != nil {
 		return err
 	}

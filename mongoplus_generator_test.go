@@ -1,6 +1,7 @@
 package mongoplus_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,8 @@ import (
 
 	mp "github.com/kuangshp/mongo-plus"
 	manual "github.com/kuangshp/mongo-plus/examples/manual/model"
+	"github.com/kuangshp/mongo-plus/internal/testutil"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // 实际执行 README 中的业务 generator.go，验证仅导入公共包即可生成并编译。
@@ -35,13 +38,27 @@ func TestPublicGeneratorFromConsumerModule(t *testing.T) {
 	if !ok {
 		t.Fatal("不完整的 Go 代码块")
 	}
-	code = strings.ReplaceAll(code, "example.com/shop", "example.com/consumer")
+	_, configBlock, ok := strings.Cut(string(document), "<!-- business-generator-config -->")
+	if !ok {
+		t.Fatal("缺少业务 YAML 示例")
+	}
+	_, configBlock, ok = strings.Cut(configBlock, "```yaml\n")
+	if !ok {
+		t.Fatal("缺少 YAML 代码块")
+	}
+	configYAML, _, ok := strings.Cut(configBlock, "\n```")
+	if !ok {
+		t.Fatal("不完整的 YAML 代码块")
+	}
+	configYAML = strings.ReplaceAll(configYAML, "example.com/shop", "example.com/consumer")
 	mod := fmt.Sprintf("module example.com/consumer\n\ngo 1.25.5\nrequire github.com/kuangshp/mongo-plus v0.0.0\nreplace github.com/kuangshp/mongo-plus => %q\n", root)
 	for name, data := range map[string]string{
-		"go.mod":            mod,
-		"generator.go":      code,
-		"schema/user.json":  `{"fields":[{"name":"username","type":"string","required":true}]}`,
-		"schema/event.json": `{"id":{"type":"objectId"},"fields":[]}`,
+		"go.mod":              mod,
+		"generator.go":        code,
+		"mongo-plus.yml":      configYAML,
+		"schema/user.json":    `{"fields":[{"name":"username","type":"string","required":true}]}`,
+		"schema/event.json":   `{"id":{"type":"objectId"},"fields":[]}`,
+		"schema/sysUser.json": `{"fields":[]}`,
 	} {
 		path := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -61,13 +78,15 @@ func TestPublicGeneratorFromConsumerModule(t *testing.T) {
 		}
 	}
 	run("get", "github.com/kuangshp/mongo-plus@v0.0.0")
+	// 不配置 mongodb 时，普通命令直接生成，不依赖环境变量。
 	run("run", "generator.go")
 	for name, fragment := range map[string]string{
-		"internal/dal/entity/user_entity.go":  "package entity",
-		"internal/dal/dao/user_fields_gen.go": "package dao",
-		"internal/dal/repository/user_gen.go": "example.com/consumer/internal/dal/entity",
-		"internal/dal/dto/user_dto.go":        "type ModifyUserDTO struct",
-		"internal/dal/vo/event_vo.go":         "bson.ObjectID",
+		"internal/dal/entity/user_entity.go":     "package entity",
+		"internal/dal/dao/user_fields_gen.go":    "package dao",
+		"internal/dal/repository/user_gen.go":    "example.com/consumer/internal/dal/entity",
+		"internal/dal/dto/user_dto.go":           "type ModifyUserDTO struct",
+		"internal/dal/vo/event_vo.go":            "bson.ObjectID",
+		"internal/dal/repository/sysuser_gen.go": `Name: "sys_user"`,
 	} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || !strings.Contains(string(data), fragment) {
@@ -96,6 +115,29 @@ func TestPublicGeneratorFromConsumerModule(t *testing.T) {
 	for _, dependency := range []string{"github.com/kuangshp/gorm-plus", "github.com/kuangshp/go-utils", "gorm.io/", "github.com/zeromicro/go-zero"} {
 		if strings.Contains(string(resolved), dependency) {
 			t.Fatalf("公共包引入了额外框架: %s", dependency)
+		}
+	}
+	// 同一个命令：YAML 配置 mongodb 后，应在没有业务写入时创建空集合。
+	if uri := os.Getenv("MONGOPLUS_TEST_URI"); uri != "" {
+		db := testutil.Database(t)
+		configured := configYAML + fmt.Sprintf("\nmongodb:\n  uri: %q\n  database: %q\n", uri, db.Name())
+		if err := os.WriteFile(filepath.Join(dir, "mongo-plus.yml"), []byte(configured), 0600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command("go", "run", "generator.go")
+		command.Dir = dir
+		command.Env = append(os.Environ(), "GOWORK=off")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("README 默认同步命令失败: %v\n%s", err, output)
+		}
+		for _, name := range []string{"user", "event", "sys_user"} {
+			names, err := db.ListCollectionNames(context.Background(), bson.M{"name": name})
+			if err != nil || len(names) != 1 {
+				t.Fatalf("README 未创建集合 %s: %v %v", name, names, err)
+			}
+			if count, err := db.Collection(name).CountDocuments(context.Background(), bson.D{}); err != nil || count != 0 {
+				t.Fatalf("README 同步写入了业务数据 %s: %d %v", name, count, err)
+			}
 		}
 	}
 }

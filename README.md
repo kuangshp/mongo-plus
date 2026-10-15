@@ -6,7 +6,7 @@
 
 ## 作为公共包使用
 
-业务项目通过 `github.com/kuangshp/mongo-plus` 导入公共包，在项目根目录放置 `generator.go`，执行 `go run generator.go` 即可生成代码，使用方式与 gorm-plus 一致。生成 Entity/DAO/Repository/DTO/VO 不要求安装 CLI，也不要求单独维护生成器 YAML。
+业务项目通过 `github.com/kuangshp/mongo-plus` 导入公共包，在项目根目录放置 `generator.go`，执行 `go run generator.go` 即可生成代码，使用方式与 gorm-plus 一致。推荐使用 YAML 管理生成配置和可选数据源；生成代码不要求安装 CLI，也支持直接在 Go 中构造配置。
 
 发布版本后，在业务项目中安装依赖：
 
@@ -28,14 +28,12 @@ go get github.com/kuangshp/mongo-plus@v0.0.0
 在本项目根目录执行：
 
 ```bash
-# 这两步不需要 MongoDB。
+# 默认示例将 mongodb 注释，可先离线生成代码。
 make check
 make gen
 
-# 需要自己的开发 MongoDB；事务测试需要副本集。
-export MONGO_URI='mongodb://127.0.0.1:27017'
-make schema-plan
-make schema-apply
+# 需要真实数据库时，在 examples/mongo-plus.yaml 中填写 mongodb 后再执行：
+make gen # 这次会先同步集合、索引和校验器。
 make example
 make statistics-example # 订单分组、金额统计、数组展开。
 ```
@@ -48,49 +46,74 @@ CLI 是可选工具，主要用于 goctl 模板、Swagger 和显式 schema plan/
 
 ### 根目录 generator.go（推荐）
 
-将下面的文件复制到业务项目根目录，修改 Package 为 go.mod 的 module，输出目录与 gorm-plus 的 GeneratorConfig 对应：
+生成配置统一放在 `mongo-plus.yml`（也支持 .yaml），generator.go 只加载配置并调用公共包。
 
 <!-- business-generator -->
 ```go
 //go:build ignore
 
-// 在业务项目根目录运行：go run generator.go。
+// 在项目根目录执行 go run generator.go；也可通过 -config 指定 YAML 文件。
 package main
 
 import (
+    "flag"
     "log"
 
     mongoplus "github.com/kuangshp/mongo-plus"
 )
 
 func main() {
-    if err := mongoplus.Generate(&mongoplus.GeneratorConfig{
-        Package:      "example.com/shop",          // 与业务项目 go.mod 的 module 一致。
-        SchemaDir:    "schema",                    // JSON 实体定义目录。
-        ModelPkgPath: "internal/dal/entity",       // Entity 输出目录，Go 包名为 entity。
-        OutPath:      "internal/dal/dao",          // DAO 输出目录。
-        RepoPath:     "internal/dal/repository",   // Repository 输出目录。
-        DtoPath:      "internal/dal/dto",          // 新增/修改 DTO，首次创建后不覆盖。
-        VoPath:       "internal/dal/vo",           // 查询 VO，首次创建后不覆盖。
-        ID: mongoplus.IDConfig{                    // 全局主键，单个实体可以覆盖。
-            Type: "int64", Generation: "increment",
-        },
-        SoftDelete: mongoplus.Bool(true),          // 启用逻辑删除；false 明确关闭。
-        Timestamps: mongoplus.Bool(true),          // 生成并维护 CreatedAt、UpdatedAt。
-    }); err != nil {
-        log.Fatal(err)
-    }
+    configFile := flag.String("config", "mongo-plus.yml", "生成器 YAML 配置文件")
+    flag.Parse()
+    cfg, err := mongoplus.LoadGeneratorConfig(*configFile)
+    if err != nil { log.Fatal(err) }
+    // 配置了 mongodb 就先同步集合、索引、校验器；省略则只生成文件。
+    if err := mongoplus.Generate(cfg); err != nil { log.Fatal(err) }
+    log.Print("Entity、DAO、Repository、DTO、VO 生成完成")
 }
+```
+
+在业务项目根目录创建 `mongo-plus.yml`：
+
+<!-- business-generator-config -->
+```yaml
+package: example.com/shop # 与业务 go.mod 的 module 一致。
+schemaDir: schema
+model_pkg_path: internal/dal/entity
+out_path: internal/dal/dao
+repo_path: internal/dal/repository
+dto_path: internal/dal/dto # 可选，留空不生成。
+vo_path: internal/dal/vo # 可选，留空不生成。
+pluralize: false # false（默认）为 user、sys_user；true 为 users、sys_users。
+id:
+  type: int64
+  generation: increment
+softDelete: true
+timestamps: true
+
+# 可选数据源：取消注释后，go run generator.go 会先同步数据库再生成文件。
+# 不配置 mongodb 时仅生成代码，集合由首次业务插入创建。
+# mongodb:
+#   uri: "mongodb://127.0.0.1:27017"
+#   database: shop
+#   maxPoolSize: 100
 ```
 
 ```bash
 go run generator.go
 go mod tidy
+
+# 使用其他 YAML 文件。
+go run generator.go -config application-generator.yml
 ```
 
-`//go:build ignore` 保证 generator.go 不参与业务服务的正常构建。相对路径以执行命令时的业务项目根目录为基准，不会指向 mongo-plus 的安装目录。Package、ModelPkgPath、OutPath、RepoPath、DtoPath、VoPath 与 gorm-plus 对应字段含义一致；MongoDB 用 SchemaDir 指定实体 JSON，生成代码不需要数据库连接。
+**同一条命令，是否连接数据库由 YAML 的 mongodb 段决定。** 完全不填写时只生成文件；配置完整的 uri、database 时，先创建/同步集合、校验器和索引，再生成文件。只填了一部分、空配置或连接失败会报错停止，不会静默忽略。无需 -sync 参数，也不要求通过环境变量配置；已有部署需要时，uri/database 仍支持 ${变量名} 展开，展开后为空会报错。
 
-本库也提供可直接运行的 [根目录 generator.go](generator.go)，用于生成仓库内 examples。业务项目应使用上面的配置，而非照搬本库的 module 和 examples 路径。
+pluralize 就是“是否在集合名后面带 s”的全局配置：`false` 或省略表示不追加，`true` 表示追加。单个 JSON 的 collection 可完整覆盖最终集合名。
+
+`//go:build ignore` 保证 generator.go 不参与服务正常构建。YAML 中路径相对该配置文件所在目录。Package、ModelPkgPath、OutPath、RepoPath、DtoPath、VoPath 与 gorm-plus 对应字段含义一致。Go 代码仍可直接构造 GeneratorConfig，MongoDB 同样是可选字段。
+
+本库的 [generator.go](generator.go) 默认读取 [examples/mongo-plus.yaml](examples/mongo-plus.yaml)，用于重新生成仓库内示例；业务项目复制上面的入口即可。
 
 所有实体继承全局 ID、SoftDelete、Timestamps，不用逐个重复配置。未配置 ID 时默认 objectId + auto；SoftDelete、Timestamps 默认 true，可通过 Bool(false) 关闭。
 
@@ -116,7 +139,17 @@ go mod tidy
 }
 ```
 
-默认 `user.json → UserEntity → users`。集合命名使用文件名追加 `s` 的简单约定；特殊单复数或不希望追加 `s` 时，在实体中显式设置 `collection`。可以使用 `entity` 自定义 Go 类型名。
+集合名自动从 JSON 文件名推导，不需要每个实体重复配置：
+
+| 文件名 | Go Entity | 默认集合名 | Pluralize: true |
+| --- | --- | --- | --- |
+| `user.json` | `UserEntity` | `user` | `users` |
+| `sys_user.json` | `SysUserEntity` | `sys_user` | `sys_users` |
+| `sysUser.json` | `SysUserEntity` | `sys_user` | `sys_users` |
+
+`Pluralize` 是 bool 开关，true 仅在自动推导的名称末尾追加 s，不进行英语单复数变形。上述两个 sysUser 写法是二选一；同时定义会因实体/集合名称冲突而报错。单个实体可用 `"collection": "custom_users"` 完整覆盖集合名，工具不会再对它转下划线或追加后缀；`entity` 仅覆盖 Go 类型名，不改变按文件名推导的集合名。
+
+**命名行为变更：旧版本默认追加 s；现在默认不追加。** 已使用 `users` 等集合的项目应设置 `Pluralize: true`（YAML 为 `pluralize: true`），或逐个明确 collection，避免生成的 Repository 指向新集合。本库示例已显式配置 true，继续使用原有集合。
 
 主键、时间和逻辑删除字段由工具补充，JSON 的 `fields` 不重复定义它们。
 
@@ -149,61 +182,41 @@ go mod tidy
 
 ## 2. 生成代码与同步数据库
 
-常规生成使用根目录 generator.go：
+MongoDB 中的“表”称为集合。[MongoDB 支持首次写入时自动创建集合](https://www.mongodb.com/docs/manual/core/databases-and-collections/)。不配置生成器数据源时，生成的 Repository 会在业务服务中使用运行时连接写入，并由 MongoDB 创建集合；首次插入不会自动根据本库 JSON 建立唯一索引或字段校验器。
 
-```bash
-go run generator.go
-```
-
-### 可选 YAML 与 CLI
-
-已有 YAML 使用方式继续支持。也可以保存 `mongo-plus.yaml`，由公共包加载：
+需要提前创建集合时，在同一份 mongo-plus.yml 中配置：
 
 ```yaml
-package: example.com/shop # 与 go.mod 的 module 一致；兼容旧字段 module。
-schemaDir: schema
-model_pkg_path: internal/dal/entity
-out_path: internal/dal/dao
-repo_path: internal/dal/repository
-dto_path: internal/dal/dto # 可选，留空不生成。
-vo_path: internal/dal/vo # 可选，留空不生成。
-id:
-  type: int64
-  generation: increment
-softDelete: true
-timestamps: true
-mongodb: # 仅在 schema plan/apply 时连接，普通生成不需要填写。
-  uri: "${MONGO_URI}"
+mongodb:
+  uri: "mongodb://127.0.0.1:27017"
   database: shop
   maxPoolSize: 100
 ```
 
-```go
-cfg, err := mongoplus.LoadGeneratorConfig("mongo-plus.yaml")
-if err != nil { log.Fatal(err) }
-if err := mongoplus.Generate(cfg); err != nil { log.Fatal(err) }
-```
-
-YAML 中路径相对配置文件所在目录；Go 代码直接构造时相对当前工作目录。旧的 `module`、`output: query` 仍兼容，未分别设置输出路径时生成在 query/model、query/dao、query/repository。
+然后仍然执行 `go run generator.go`。集合、索引、校验规则在生成时同步，不需要插入任何业务数据。运行服务时还需通过项目自己的运行配置建立连接并注入 Repository；生成器的连接会在同步结束后关闭。
 
 公共包入口：
 
 | API | 用途 |
 | --- | --- |
-| `GeneratorConfig` / `Generate(cfg)` | 根据 JSON 生成 Entity、DAO、Repository 及可选 DTO/VO，与 gorm-plus 同样使用根包入口 |
-| `LoadGeneratorConfig(path)` | 从可选 YAML 加载生成配置 |
-| `GeneratorModel` / `GenerateModels(cfg, models...)` | 从手写 Entity 生成 DAO/Repository 及可选 DTO/VO，不重复定义 Entity |
-| `RunGoctl(ctx, options, args...)` | 通过公共包调用内嵌 go-zero 模板 |
+| `LoadGeneratorConfig(path)` | 从 .yml/.yaml 加载生成配置，数据源可选 |
+| `Generate(cfg)` | 从 JSON 生成 Entity/DAO/Repository/DTO/VO；配置 MongoDB 时先同步数据库 |
+| `GenerateModels(cfg, models...)` | 从手写 Entity 生成；同样按可选 MongoDB 决定是否先同步 |
+| `SyncSchema(ctx, cfg)` / `SyncModels(ctx, cfg, models...)` | 显式单独同步数据库，需要完整数据源 |
+| `RunGoctl(ctx, options, args...)` | 调用内嵌 go-zero 模板 |
 | `WriteGoctlTemplateHome(dir)` | 导出内嵌模板 |
 
-也可继续使用 CLI，MongoDB 的结构同步仍通过显式命令执行：
+CLI 与公共包采用相同的可选数据源规则：
 
 ```bash
-mongoplus check --config mongo-plus.yaml
-mongoplus generate --config mongo-plus.yaml
-mongoplus schema plan --config mongo-plus.yaml
-mongoplus schema apply --config mongo-plus.yaml
+mongoplus check --config mongo-plus.yml
+mongoplus generate --config mongo-plus.yml
+# 以下两项需要配置 mongodb。
+mongoplus schema plan --config mongo-plus.yml
+mongoplus schema apply --config mongo-plus.yml
 ```
+
+旧的 module、output: query 以及 Go 代码直接构造 GeneratorConfig 的方式继续支持。未分别设置输出路径时生成在 query/model、query/dao、query/repository；DTO/VO 仍需指定路径。
 
 数据库命令默认超时 60 秒，可以加 `--timeout 2m`。未知配置项、重复 JSON 键、重复字段、错误类型、索引冲突和保留字段冲突会明确报错。
 
@@ -213,12 +226,45 @@ mongoplus schema apply --config mongo-plus.yaml
 internal/dal/
 ├── entity/user_entity.go
 ├── dao/user_fields_gen.go
-└── repository/
-    ├── user_gen.go  # 每次生成更新基础实现。
-    └── user.go      # 首次创建，后续保留业务扩展。
+├── repository/
+│   ├── user_gen.go  # 每次生成更新基础实现。
+│   └── user.go      # 首次创建，后续保留业务扩展。
+├── dto/user_dto.go  # CreateUserDTO、ModifyUserDTO；首次创建后不覆盖。
+└── vo/user_vo.go    # UserVO；首次创建后不覆盖。
 ```
 
 生成器先渲染所有文件，再写入；同名非生成文件不会被覆盖。Entity 的字段变化通过 JSON 修改后重新生成。删除或重命名整个实体时，旧生成文件需要手动整理，工具不自动删除源文件。
+
+### DTO 与 VO
+
+与 gorm-plus 一样，填写 `DtoPath`、`VoPath` 才生成对应目录，留空时不生成。DTO/VO 是可直接修改的业务初始模板，后续生成保留已有文件；schema 字段变化后，按业务调整 DTO/VO，或备份并删除对应文件后重新生成。不会在重新生成 Entity 时覆盖你的业务校验、字段裁剪等修改。
+
+- `CreateUserDTO` 包含业务字段，自动主键不出现在新增 DTO；手动主键会生成 ID。`ModifyUserDTO` 包含 ID 和全部业务字段，用于完整提交，不表示 PATCH。
+- DTO 不包含自动维护的租户、创建时间、更新时间、逻辑删除字段；VO 包含主键、业务字段和查询所需时间、租户字段，省略逻辑删除字段。VO 默认列出其余字段，接口返回前应裁剪密码等敏感信息。
+- ObjectID、Decimal128、日期时间在 DTO 中使用 string，分别由业务层调用 `bson.ObjectIDFromHex`、`bson.ParseDecimal128`、`time.ParseInLocation` 转成 Entity 类型；嵌套对象、数组同样生成请求类型。VO 保留 Entity 的 BSON 类型和字段标签，可直接用于 `Scan`、`ScanByPage`；按接口需要自行格式化输出。
+- DTO 自带 `UnmarshalJSON`，支持数字和数字字符串兼容，不经过 float64。金额字符串保留原文，生成器不强制两位小数；仍需检查 Decimal128 解析结果和业务精度。
+- 初始 `validate` 标签包括必填、ObjectID、时间格式和数组元素校验。必填数字、bool、集合使用指针区分缺失与合法的 `0`、`false`、空集合；必填字符串要求非空，可空字段允许省略或 null。时间格式为 `2006-01-02 15:04:05`。这是常见请求校验初值，可按业务调整，与数据库 required（字段存在）并非完全相同。
+
+```go
+var req dto.CreateUserDTO
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    // 返回 JSON 解析错误。
+    return
+}
+if err := validation.Validate(&req); err != nil {
+    // 返回中文参数校验错误。
+    return
+}
+// 将 req 的业务字段显式映射到 Entity 后调用 Repository.Create；不会自动写入数据库。
+
+var rows []vo.UserVO
+total, err := userRepository.WithContext(ctx).
+    Where(dao.UserEntity.Status.Eq(1)).
+    Order(dao.UserEntity.ID.Desc()).
+    ScanByPage(&rows, 1, 20)
+```
+
+以上示例按业务项目导入 `internal/dal/dto`、`internal/dal/vo`、`internal/dal/dao`，校验包为 `github.com/kuangshp/mongo-plus/validation`。Gin 直接绑定这些 DTO 后调用同一个 `validation.Validate`，无需再定义一套相同请求结构，详见 [Gin 校验用法](docs/validation.md)。go-zero 的 `.api` 仍是 HTTP 契约来源，goctl 生成的 `types` 不会自动替换为 DTO；在 Logic 中按需映射，避免手动维护两份协议。
 
 `schema apply` 不删除集合、文档、旧字段或现有索引，不重建冲突索引。同步新增字段不会补齐历史文档。字段重命名、类型转换、数据回填、索引替换应编写显式迁移。更新 strict 校验规则后，旧文档的后续写入可能因不符合新规则而失败，先通过 plan 审阅变更并安排迁移。
 
@@ -244,16 +290,14 @@ schema-apply:
 ```go
 import (
     "context"
-    "os"
-
     mongoplus "github.com/kuangshp/mongo-plus"
     "example.com/shop/internal/dal/repository"
 )
 
-db, err := mongoplus.Connect(ctx, mongoplus.Config{
-    URI:      os.Getenv("MONGO_URI"),
-    Database: "shop",
-})
+// 示例复用 YAML 中的数据源；服务也可传入自身运行配置加载的 MongoDB 配置。
+cfg, err := mongoplus.LoadGeneratorConfig("mongo-plus.yml")
+if err != nil { return err }
+db, err := mongoplus.Connect(ctx, cfg.MongoDB)
 if err != nil {
     return err
 }
@@ -263,7 +307,7 @@ userRepository := repository.NewUserRepository(db)
 
 数据库包装器和 Repository 在启动时创建并注入业务层，不要每个请求新建 Client。已有官方驱动数据库可用 `mongoplus.NewDatabase(nativeDB)` 包装；关闭连接由拥有该 Client 的启动入口负责。
 
-Gin 和 go-zero 都只需传入请求的 `context.Context`，没有框架绑定。框架的参数校验仍由业务项目负责；MongoDB 校验规则只在执行 schema apply 后存在。
+Gin 和 go-zero 都只需传入请求的 `context.Context`，没有框架绑定。框架的参数校验仍由业务项目负责；MongoDB 校验规则需通过配置了数据源的 Generate、SyncSchema 或 schema apply 建立。
 
 ```go
 user := &model.UserEntity{Username: "admin", Status: 1}
@@ -481,7 +525,7 @@ db.Observer = func(ctx context.Context, event mongoplus.Observation) {
 
 ## 9. 手写 Entity 路线
 
-已有 Model 时无需再维护 JSON，通过公共包的 GeneratorModel 注册它们：
+已有 Model 时无需再维护 JSON，复用同一份 mongo-plus.yml，通过 GeneratorModel 注册模型：
 
 ```go
 //go:build ignore
@@ -496,26 +540,19 @@ import (
 )
 
 func main() {
-    cfg := &mongoplus.GeneratorConfig{
-        Package: "example.com/shop",
-        ModelPkgPath: "internal/dal/entity",
-        OutPath: "internal/dal/dao",
-        RepoPath: "internal/dal/repository",
-        DtoPath: "internal/dal/dto",
-        VoPath: "internal/dal/vo",
-        ID: mongoplus.IDConfig{Type: "int64", Generation: "increment"},
-    }
+    cfg, err := mongoplus.LoadGeneratorConfig("mongo-plus.yml")
+    if err != nil { log.Fatal(err) }
     if err := mongoplus.GenerateModels(cfg,
-        mongoplus.GeneratorModel{Value: entity.UserEntity{}, Collection: "users"},
+        mongoplus.GeneratorModel{Value: entity.UserEntity{}},
     ); err != nil { log.Fatal(err) }
 }
 ```
 
-保存为业务项目根目录 generator.go，然后 `go run generator.go`。生成器生成 DAO、Repository，以及配置了 DtoPath/VoPath 时的 DTO/VO，不覆盖或复制手写 Entity。主键 Go 类型需匹配全局规则，特殊模型通过 GeneratorModel.ID 覆盖。
+执行 `go run generator.go`。YAML 中配置了 mongodb 就先同步数据库；省略则只生成 DAO、Repository 和可选 DTO/VO，不复制或覆盖手写 Entity。主键 Go 类型需匹配全局规则，特殊模型通过 GeneratorModel.ID 覆盖。
 
 手写模型显式声明 `ID` 和 `bson:"_id"`；启用时间或逻辑删除时，同时声明对应 time.Time 和 *time.Time 字段。`mongoplus:"required,unique"`、`comment:"用户名"` 可提供额外元数据。参考 [手写模型示例](examples/manual/model/document.go)。本版显式报错的特殊结构包括 bson inline、递归结构、自定义外部命名类型与指针数组元素，避免静默生成错误类型。
 
-需要从手写模型同步数据库时，先将同一份配置的值传给 `schema.FromModels(*cfg, models...)` 获得同一份元数据，再调用 `schema.Plan(ctx, nativeDB, entities)` / `schema.Apply(...)`。
+手写 Entity 自动推导的集合名同样遵循转下划线加 Pluralize 的规则；GeneratorModel.Collection 可完整覆盖。需要只同步不生成时，可以单独调用 SyncModels；需要预览变更时，可通过 schema.FromModels 与 schema.Plan 取得计划。
 
 ## 10. 关联查询：Lookup、LeftJoin、InnerJoin
 
@@ -809,9 +846,8 @@ err := userRepository.WithContext(ctx).
 ### 运行完整示例与高级管道
 
 ```bash
+# 先在 examples/mongo-plus.yaml 中填写 mongodb 的 uri、database。
 make gen
-export MONGO_URI='mongodb://127.0.0.1:27017'
-make schema-apply
 make statistics-example
 ```
 
