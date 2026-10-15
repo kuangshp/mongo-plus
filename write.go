@@ -11,29 +11,32 @@ import (
 )
 
 // UpdateById 显式更新指定字段，零值同样生效；不会修改主键、租户或创建时间。
-func (r *Repository[T, K]) UpdateById(ctx context.Context, id K, ops ...UpdateOp) (*mongo.UpdateResult, error) {
+func (r *Repository[T, K]) UpdateById(ctx context.Context, id K, opts ...UpdateOption) (*mongo.UpdateResult, error) {
 	if err := r.validID(id); err != nil {
 		return nil, err
 	}
-	return r.update(ctx, []QueryOption{idOption(id)}, ops, false)
+	return r.update(ctx, []QueryOption{idOption(id)}, flattenUpdates(opts), false)
 }
 
 // UpdateByWrapper 按条件更新；全量更新必须显式使用 AllowAll。
-func (r *Repository[T, K]) UpdateByWrapper(ctx context.Context, fn func(*Wrapper), ops ...UpdateOp) (*mongo.UpdateResult, error) {
+func (r *Repository[T, K]) UpdateByWrapper(ctx context.Context, fn func(*Wrapper), opts ...UpdateOption) (*mongo.UpdateResult, error) {
 	w := Query()
 	if fn != nil {
 		fn(w)
 	}
-	return r.update(ctx, []QueryOption{w.Build()}, ops, true)
+	return r.update(ctx, []QueryOption{w.Build()}, flattenUpdates(opts), true)
 }
 
 // UpdateMapById 为可信业务代码提供 map 更新；更推荐 DAO 字段的 Set 方法。
 func (r *Repository[T, K]) UpdateMapById(ctx context.Context, id K, values map[string]any) (*mongo.UpdateResult, error) {
+	if err := r.validID(id); err != nil {
+		return nil, err
+	}
 	ops := make([]UpdateOp, 0, len(values))
 	for path, value := range values {
 		ops = append(ops, UpdateOp{Operator: "$set", Path: path, Value: value})
 	}
-	return r.UpdateById(ctx, id, ops...)
+	return r.update(ctx, []QueryOption{idOption(id)}, ops, false)
 }
 
 func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops []UpdateOp, many bool) (result *mongo.UpdateResult, err error) {
@@ -66,9 +69,14 @@ func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops [
 	}
 	defer r.invalidate(ctx)
 	if many {
-		return r.collection.UpdateMany(ctx, filter, update)
+		result, err = r.collection.UpdateMany(ctx, filter, update)
+	} else {
+		result, err = r.collection.UpdateOne(ctx, filter, update)
 	}
-	return r.collection.UpdateOne(ctx, filter, update)
+	if err == nil && (result == nil || !result.Acknowledged) {
+		err = ErrUnacknowledgedWrite
+	}
+	return result, err
 }
 
 func appendUpdate(update bson.D, op, path string, value any) bson.D {
@@ -182,6 +190,9 @@ func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many,
 		if err != nil {
 			return 0, err
 		}
+		if result == nil || !result.Acknowledged {
+			return 0, ErrUnacknowledgedWrite
+		}
 		return result.ModifiedCount, nil
 	}
 	var result *mongo.DeleteResult
@@ -192,6 +203,9 @@ func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many,
 	}
 	if err != nil {
 		return 0, err
+	}
+	if result == nil || !result.Acknowledged {
+		return 0, ErrUnacknowledgedWrite
 	}
 	return result.DeletedCount, nil
 }
@@ -217,6 +231,9 @@ func (r *Repository[T, K]) RestoreById(ctx context.Context, id K) (int64, error)
 	result, err := r.collection.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return 0, err
+	}
+	if result == nil || !result.Acknowledged {
+		return 0, ErrUnacknowledgedWrite
 	}
 	return result.ModifiedCount, nil
 }

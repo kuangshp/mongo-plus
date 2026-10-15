@@ -26,7 +26,9 @@ import (
     repository %q
 )
 
-func migratedRepositoryCalls(ctx context.Context, users repository.UserRepository) error {
+func migratedRepositoryCalls(ctx context.Context, db *mongoplus.Database, users repository.UserRepository) error {
+    _ = repository.NewUserRepository()
+    _ = repository.NewUserRepository(db)
     _, _, err := users.FindPageByWrapper(ctx, 1, 10, func(w *mongoplus.Wrapper) {
         w.WhereGroupFn(func(group *mongoplus.Wrapper) {
             group.Like(dao.UserEntity.Username, "admin").OrRLike(dao.UserEntity.Username, "test_")
@@ -39,7 +41,9 @@ func migratedRepositoryCalls(ctx context.Context, users repository.UserRepositor
     if err != nil { return err }
     _, err = users.ExistsByWrapper(ctx, nil, mongoplus.QueryOpt().Where(dao.UserEntity.Status.Eq(0)).Build())
     if err != nil { return err }
-    _, err = users.UpdateById(ctx, 1, mongoplus.Update().WithColumns(dao.UserEntity.Status.Set(0)).Build()...)
+    _, err = users.UpdateById(ctx, 1, mongoplus.Update().WithColumns(dao.UserEntity.Status.Value(0)).Build())
+    if err != nil { return err }
+    _, err = users.UpdateById(ctx, 1, mongoplus.WithUpdateColumns(dao.UserEntity.Status.Set(1)))
     if err != nil { return err }
     _, err = users.DeleteByIdList(ctx, []int64{1, 2}, mongoplus.Delete().WithPhysicalDelete().Build())
     if err != nil { return err }

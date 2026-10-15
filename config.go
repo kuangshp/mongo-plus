@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kuangshp/mongo-plus/internal/settings"
@@ -100,7 +101,26 @@ func Connect(ctx context.Context, c Config) (*Database, error) {
 }
 
 // NewDatabase 使用业务项目已有的官方驱动数据库；不创建连接。
-func NewDatabase(db *mongo.Database) *Database { return &Database{native: db} }
+func NewDatabase(db *mongo.Database) *Database {
+	d := &Database{native: db}
+	registerCache(d)
+	return d
+}
+
+var defaultDatabase atomic.Pointer[Database]
+
+// Use 注册进程内默认数据库。之后生成的 NewXRepository() 可以不传连接，用法对应 gorm-plus 注册数据源后直接构造仓储。
+// 传入 nil 会清除默认连接。显式 NewXRepository(db) 仍优先使用参数中的连接。
+func Use(db *Database) {
+	if db == nil {
+		defaultDatabase.Store(nil)
+		return
+	}
+	defaultDatabase.Store(db)
+}
+
+// DefaultDB 返回 Use 注册的数据库；尚未注册时为 nil。
+func DefaultDB() *Database { return defaultDatabase.Load() }
 
 // Native 返回原生数据库，供明确需要官方 API 的仓储扩展使用。
 func (d *Database) Native() *mongo.Database { return d.native }
@@ -122,7 +142,7 @@ func WithActor(ctx context.Context, id any) context.Context {
 }
 
 // Transaction 执行官方 Session 事务；回调必须使用 txCtx，且可能被驱动重试。
-func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Context) error) error {
+func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Context) error, opts ...options.Lister[options.TransactionOptions]) error {
 	ctx = resolveContext(ctx)
 	if db == nil || db.native == nil || fn == nil {
 		return fmt.Errorf("事务数据库和回调不能为空")
@@ -137,7 +157,7 @@ func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Contex
 	defer session.EndSession(ctx)
 	state := txCaches{}
 	ctx = context.WithValue(ctx, txCacheKey{}, state)
-	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) { return nil, fn(txCtx) })
+	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) { return nil, fn(txCtx) }, opts...)
 	for database, collections := range state {
 		for collection := range collections {
 			database.InvalidateCache(collection)
@@ -147,11 +167,11 @@ func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Contex
 }
 
 // TransactionAs 在事务中构建业务项目自己的仓储集合，保持与 gorm-plus 类似的用法。
-func TransactionAs[Q any](ctx context.Context, db *Database, use func(context.Context) Q, fn func(Q) error) error {
+func TransactionAs[Q any](ctx context.Context, db *Database, use func(context.Context) Q, fn func(Q) error, opts ...options.Lister[options.TransactionOptions]) error {
 	if use == nil || fn == nil {
 		return fmt.Errorf("事务仓储构造函数和回调不能为空")
 	}
-	return Transaction(ctx, db, func(txCtx context.Context) error { return fn(use(txCtx)) })
+	return Transaction(ctx, db, func(txCtx context.Context) error { return fn(use(txCtx)) }, opts...)
 }
 
 // DbPage 计算分页范围，与 gorm-plus 一样默认每页 10 条、最多 500 条。

@@ -302,8 +302,30 @@ func (u *UpdateBuilder) Unset(f field.Named) *UpdateBuilder {
 	return u.Apply(UpdateOp{Operator: "$unset", Path: f.Name(), Value: ""})
 }
 
-// Build 返回更新操作副本。
-func (u *UpdateBuilder) Build() []UpdateOp { return append([]UpdateOp(nil), u.ops...) }
+// Build 返回可直接传给 UpdateById 的更新选项，不需要再展开。
+func (u *UpdateBuilder) Build() UpdateOption { return updateColumns(append([]UpdateOp(nil), u.ops...)) }
+
+// UpdateOption 是单字段赋值或一组字段赋值，UpdateById 会展开成具体操作。
+type UpdateOption interface {
+	Operations() []UpdateOp
+}
+
+type updateColumns []UpdateOp
+
+func (c updateColumns) Operations() []UpdateOp { return append([]UpdateOp(nil), c...) }
+
+func flattenUpdates(opts []UpdateOption) []UpdateOp {
+	ops := make([]UpdateOp, 0, len(opts))
+	for _, opt := range opts {
+		if opt != nil {
+			ops = append(ops, opt.Operations()...)
+		}
+	}
+	return ops
+}
+
+// WithUpdateColumns 与 gorm-plus 同名，直接作为 UpdateById 的一个参数。
+func WithUpdateColumns(ops ...UpdateOp) UpdateOption { return updateColumns(ops) }
 
 func buildUpdate(ops []UpdateOp, protected ...string) (bson.D, error) {
 	if len(ops) == 0 {

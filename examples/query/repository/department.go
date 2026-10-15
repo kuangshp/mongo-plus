@@ -5,30 +5,31 @@ import (
 )
 
 // DepartmentRepository 是业务扩展接口；此文件首次创建后不再覆盖。
-// 基础读写在 iDefaultDepartmentRepository。自定义查询加在 customDepartmentRepository 上。
+// 基础读写在 iDefaultDepartmentRepository。自定义查询加在 customerDepartmentRepository 上。
 type DepartmentRepository interface {
 	iDefaultDepartmentRepository
 }
 
-type customDepartmentRepository struct {
+type customerDepartmentRepository struct {
 	*defaultDepartmentRepository
 }
 
-var _ DepartmentRepository = (*customDepartmentRepository)(nil)
+var _ DepartmentRepository = (*customerDepartmentRepository)(nil)
 
-// NewDepartmentRepository 创建仓储并复用传入的数据库连接。
-func NewDepartmentRepository(db *mongoplus.Database) DepartmentRepository {
-	return &customDepartmentRepository{newDefaultDepartmentRepository(db)}
+// NewDepartmentRepository 创建仓储。
+// 不传连接时使用 mongoplus.Use 注册的默认数据库；传入连接时优先使用参数。
+func NewDepartmentRepository(db ...*mongoplus.Database) DepartmentRepository {
+	database := mongoplus.DefaultDB()
+	if len(db) > 0 {
+		database = db[0]
+	}
+	return &customerDepartmentRepository{newDefaultDepartmentRepository(database)}
 }
 
-// 自定义查询示例。取消注释后按实际字段调整，并补上 context、time 与 dao 的导入。
-// 生成的 Find/Count 已处理租户、逻辑删除；WithCache 只缓存这一次查询。
-// 直接使用 Native 写入时，需要自行调用 db.InvalidateCache。
+// 自定义查询示例。取消注释后补上 context 与 dao 的导入，再按实际字段调整 Like/WhereIf。
 //
-// func (r *customDepartmentRepository) FindRecent(ctx context.Context, limit int64) ([]*model.DepartmentEntity, error) {
-// 	return r.FindList(ctx, mongoplus.Query().
-// 		Order(dao.DepartmentEntity.ID.Desc()).
-// 		Limit(limit).
-// 		WithCache(30*time.Second).
-// 		Build())
+// func (r *customerDepartmentRepository) FindRecent(ctx context.Context, page, size int64) ([]*model.DepartmentEntity, int64, error) {
+// 	return r.FindPageByWrapper(ctx, page, size, func(w *mongoplus.Wrapper) {
+// 		w.OrderDefault(dao.DepartmentEntity.ID.Desc())
+// 	}, mongoplus.QueryOpt().WithSingleFlight(0).Build())
 // }

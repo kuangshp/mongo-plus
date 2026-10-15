@@ -2,6 +2,8 @@
 
 基于 `go.mongodb.org/mongo-driver/v2` 的 Go 数据访问库。沿用 gorm-plus 的类型安全字段、Repository、可选条件和分页使用习惯，支持 JSON 定义生成、手写 Entity、全局主键配置、逻辑删除、关联查询与链式聚合统计。
 
+从 gorm-plus 切换时，先看[迁移指南](docs/gorm-plus-migration.md)：保留根目录 `generator.go`、生成 Repository 注入、`FindPageByWrapper` 和 `QueryOpt` 的调用习惯，并列出更新返回值、BSON 条件与事务上下文的调整方式。
+
 数据层不依赖 GORM、gorm-plus、go-utils、Gin 或 go-zero。可选的 go-zero 内嵌模板包含参数校验、统一响应、CORS、静态文件、日志和 Swagger；生成的 HTTP 服务使用 go-zero。当前固定官方驱动 v2.9.2，最低要求 Go 1.25.5；本仓库通过 toolchain 使用 Go 1.26.9 安全补丁版本。业务项目也应使用受支持且已修复漏洞的 Go 工具链，依赖库的 toolchain 不会强制升级业务项目的构建环境。
 
 ## 作为公共包使用
@@ -463,12 +465,16 @@ if err != nil {
     return err
 }
 
-userRepository := repository.NewUserRepository(db)
+mongoplus.Use(db)
+userRepository := repository.NewUserRepository()
+// 需要显式注入时：repository.NewUserRepository(db)，传入连接优先于 Use。
 ```
 
 数据库包装器和 Repository 在启动时创建并注入业务层，不要每个请求新建 Client。已有官方驱动数据库可用 `mongoplus.NewDatabase(nativeDB)` 包装；创建文档直接使用该 Client 的 BSONOptions/Registry，兼容 UseJSONStructTags 和自定义字段编码器，无需重复配置。自动管理字段（ID、租户、时间、逻辑删除、审计）应使用明确的 bson 标签。关闭连接由拥有该 Client 的启动入口负责。
 
 Gin 和 go-zero 都只需传入请求的 `context.Context`，没有框架绑定。框架的参数校验仍由业务项目负责；MongoDB 校验规则需通过配置了数据源的 Generate、SyncSchema 或 schema apply 建立。
+
+Gin 项目如果沿用 gorm-plus 中直接传 `*gin.Context` 的写法，可在启动时通过 `RegisterCtxResolver` 将它解析为 `c.Request.Context()`，注册示例见[迁移指南](docs/gorm-plus-migration.md#gin-context)。
 
 ```go
 user := &model.UserEntity{Username: "admin", Status: 1}
@@ -516,7 +522,9 @@ users, err := userRepository.FindList(ctx,
 
 支持 Eq、Neq、Gt、Gte、Lt、Lte、In、NotIn、Exists、IsNull、AND/OR 分组、Select/Omit、排序、可选条件、BetweenIfNotZero。字符串 Contains/StartsWith 和 Wrapper.Like 按字面量匹配，自动转义正则特殊字符。原生 BSON 使用 RawWhere，只应由可信仓储代码构造，不能直接接收前端操作符对象。
 
-`BetweenIfNotZero` 跳过零边界；业务范围包含 0 时，直接使用 Gte/Lte。每次查询创建新的 Wrapper，不跨 goroutine 复用正在构造的对象。
+`BetweenIfNotZero` 与 gorm-plus 一致：任一边界为零值时跳过整个范围，两端均非零时包含两端。时间参数应先校验成对输入并解析为 `time.Time`；单边范围或包含 0 的范围需显式使用 Gte/Lte。每次查询创建新的 Wrapper，不跨 goroutine 复用正在构造的对象。
+
+Wrapper 同时支持 `LLikeIf/RLikeIf`、`OrLike/OrLLike/OrRLike` 及各自的 `If` 方法、`OrGroup/OrGroupIf`、`WhereGroupFn/OrGroupFn`、`OrderIf/OrderTriState/OrderDefault`。`OrWhereIf(true, a, b)` 逐个追加 OR 条件；需要 `OR (a AND b)` 时使用 `OrGroup(a, b)`。回调分组只贡献过滤条件，空回调跳过。`OrderDefault` 仅在没有显式排序时生效，显式排序无论先后调用均优先。`QueryOpt` 与 `Query` 使用同一构造器，`WithUnscoped` 与 `WithDeleted` 等价。
 
 页码默认 1，每页默认 10、最多 500，自动追加 `_id` 保证同值排序有稳定次序。FindPage 的列表与总数是两次查询，默认不保证同一快照。大偏移分页仍有 MongoDB skip 的成本。
 
@@ -556,8 +564,13 @@ _, err = userRepository.UpdateByWrapper(ctx,
 )
 
 _, err = userRepository.DeleteById(ctx, id) // 默认设置 deleted_at。
+_, err = userRepository.DeleteByIdList(ctx, []int64{1, 2, 3})
 _, err = userRepository.RestoreById(ctx, id)
 _, err = userRepository.HardDeleteById(ctx, id) // 明确物理删除。
+// 也可沿用 gorm-plus 的删除选项写法。
+_, err = userRepository.DeleteById(ctx, id,
+    mongoplus.Delete().WithPhysicalDelete().Build(),
+)
 ```
 
 逻辑删除默认开启。普通 Find、Count、Exists、更新和删除都过滤已删除文档；Restore 专门处理删除记录。`WithDeleted` 查询全部，`OnlyDeleted` 仅查询删除记录：
@@ -569,6 +582,8 @@ user, err := userRepository.FindById(ctx, id,
 ```
 
 查询和删除遵循同一租户规则。无业务条件的批量更新/删除返回 ErrUnsafeWrite；确需全量操作时明确调用 `w.AllowAll()`，它仍保留租户过滤。
+
+`DeleteByIdList` 的空列表返回 `(0, nil)`，任一无效主键会在写入前报错。`DeleteByCondition(ctx, conditions...)` 将条件按 AND 合并并遵循逻辑删除配置；物理删除选项适用于 `DeleteById`、`DeleteByIdList` 和 `DeleteByWrapper`，也可以直接传 `mongoplus.WithPhysicalDelete()`。物理删除仍受租户约束，且可命中已软删除记录。所有 Wrapper 回调均允许 nil；无条件写入仍会被拦截。`CountByWrapper` 和 `ExistsByWrapper` 与 gorm-plus 一样接受额外的 `QueryOption`。
 
 ## 6. 索引、类型和嵌套对象
 
@@ -667,9 +682,9 @@ users, err := userRepository.FindList(ctx,
 
 默认关闭读缓存。WithCache 自动合并相同在途查询；WithSingleFlight 只合并请求，不保存结果。缓存键包含租户、过滤、投影、排序和分页，不需要手写 Args。返回已解码 Go 值的独立深拷贝，调用方修改嵌套切片、map、指针不会污染缓存，也不会二次使用默认 BSON 编解码器。无法安全复制的自定义私有引用类型和循环引用绕过共享，不改变正常查询结果。
 
-缓存属于一个复用的 Database 包装器，默认最多保留 1024 条结果、约 64 MiB 保留对象，单条最多约 1 MiB，使用 TTL。超出单条限制仍正常返回，只是不进入缓存；总容量不足时清理过期结果并淘汰已有结果。容量按 Go 对象保守估算，不包含在途查询、驱动缓冲区和运行时额外开销，不是进程内存的硬上限。仓储写入自动按集合失效，并阻止旧的在途读取把失效数据重新写回缓存。Transaction 内跳过读缓存，在事务结束后失效涉及的集合。驱动外部 Session 写入无法获知提交时刻，会关闭当前包装器的本机缓存；需要缓存的事务请使用本库 Transaction。
+每个 Database 包装器独立保存查询结果，默认最多保留 1024 条结果、约 64 MiB 保留对象，单条最多约 1 MiB，使用 TTL。超出单条限制仍正常返回，只是不进入缓存；总容量不足时清理过期结果并淘汰已有结果。容量按 Go 对象保守估算，不包含在途查询、驱动缓冲区和运行时额外开销，不是进程内存的硬上限。同一个 Client、同一个数据库的所有包装器共享集合失效通知，写操作返回前同步清除其他包装器中的相关缓存，并阻止旧的在途读取重新填充。结果、解码配置和容量配置不跨包装器共享。Transaction 内跳过读缓存，在事务结束后通知相关包装器失效。外部 Session 写入无法获知提交时刻，会关闭同 Client 同库包装器的本机缓存；需要缓存的事务请使用本库 Transaction。
 
-本机缓存不提供多进程或外部写入的一致性保证。多个服务实例或外部程序写同一个集合时，保持缓存关闭，或接受所设 TTL 的陈旧窗口。本版没有内置 Redis 缓存后端。通过 Native 写入后，需要调用 `db.InvalidateCache(collection)`；原生写入也需要自行处理租户、审计和逻辑删除。
+不同 Client、不同进程或外部程序写入不会自动广播失效。要求这些场景实时读取数据库时，在启动时调用 `db.ConfigureCache(mongoplus.CacheConfig{Disabled: true})`：即使业务代码传入 WithCache 或 WithSingleFlight，也始终直读数据库，不共享在途结果。所有业务 Database 包装器均应配置该选项；省略时保留本机 TTL 缓存的原有行为。本版没有内置分布式缓存后端。通过 Native 写入后，需要调用 `db.InvalidateCache(collection)` 通知同 Client 同库的包装器；原生写入也需要自行处理租户、审计和逻辑删除。
 
 可在启动时调整缓存容量，缓存仍由每次查询的 WithCache 显式开启：
 
@@ -838,13 +853,13 @@ query := userRepository.WithContext(ctx).
 
 ### 关联后分页与事务
 
-ScanByPage 在关联和过滤完成后，用同一聚合流 `$facet` 生成当前页和总数。Lookup 数组形式的 total 是主记录行数；LeftJoin/InnerJoin 一对多展开后的 total 是最终行数。想按主记录分页并返回子列表时，使用 Lookup。
+ScanByPage 在关联和过滤完成后，先执行计数聚合，再通过独立列表聚合游标读取当前页。整页不再装入单个 `$facet` 结果文档，避免 facet 的 100 MB 内存限制和整页 16 MiB 文档限制。Lookup 数组形式的 total 是主记录行数；LeftJoin/InnerJoin 一对多展开后的 total 是最终行数。想按主记录分页并返回子列表时，使用 Lookup。
 
 分页自动补充主集合 `_id`、各展开关联的 `_id` 作为稳定排序键；不要在展开关联的子投影中排除 `_id`。空结果和超出末页返回空切片，超出末页仍返回实际 total。使用 ScanByPage 时不要再设置最终查询的 Limit/Offset；普通 Scan 可以设置它们。
 
 本版关联查询要求 MongoDB 5.0+，使用官方的等值关联加子管道语法。[官方 Lookup 说明](https://www.mongodb.com/docs/manual/reference/operator/aggregation/lookup/)
 
-关联分页受 MongoDB `$facet` 的 100 MB 阶段内存和最终 16 MiB 文档限制，allowDiskUse 不解除 facet 的内存限制；较大子列表应通过关联 Limit/Select 控制，或改用普通 Scan。一次聚合共用数据流，不承诺并发写入场景下跨集合的一致性快照；需要事务语义时传入本库 Transaction 提供的 txCtx。[官方 Facet 限制](https://www.mongodb.com/docs/manual/reference/operator/aggregation/facet/)
+计数和列表均开启 allowDiskUse，但两次查询默认不保证来自同一快照；并发写入时 total 与列表可能有差异。需要一致快照时，给 `Transaction` 或 `TransactionAs` 的最后参数传入 `options.Transaction().SetReadConcern(readconcern.Snapshot())`，查询都使用 txCtx。参数类型来自官方驱动的 `mongo/options` 和 `mongo/readconcern`。单条输出文档仍受 MongoDB 的 16 MiB 限制，Lookup/Push 生成的大数组仍应通过 Limit/Select 或业务范围控制。
 
 ```go
 err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
@@ -1012,7 +1027,7 @@ err := userRepository.WithContext(ctx).
 
 源集合在入口应用租户与逻辑删除条件，关联集合应用各自过滤；分组结果不会再次被错误套用实体的租户字段。WithDeleted/OnlyDeleted、事务 txCtx 与上下文取消继续有效。统计查询绕过单集合缓存，不自动缓存跨集合结果。
 
-分组分页在 GroupBy、Having 后统计 total，并按分组 `_id` 补充稳定排序；仍受上节提到的 facet 内存与文档大小限制。Push/AddToSet 生成大数组时同样需要控制结果规模。
+分组分页在 GroupBy、Having 后统计 total，并按分组 `_id` 补充稳定排序；计数和列表分别执行，不使用 facet。Push/AddToSet 生成的大数组仍需控制单条结果规模。
 
 ### 原生聚合扩展
 
@@ -1095,6 +1110,6 @@ build: swagger
 
 ## 性能与生产使用
 
-大批量写入使用 CreateBatch，高频数字主键按需启用 BlockSize；大集合分页优先使用 FindCursorPage，大量导出使用 Walk。关联字段应建立合适的索引，并通过 Select、Limit 控制一对多结果大小；ScanByPage 的 facet 内存和文档大小限制仍遵循 MongoDB 服务端规则。
+大批量写入使用 CreateBatch，高频数字主键按需启用 BlockSize；大集合分页优先使用 FindCursorPage，大量导出使用 Walk。关联字段应建立合适的索引，并通过 Select、Limit 控制一对多结果大小；ScanByPage 使用两个独立聚合游标，单条输出文档仍遵循 MongoDB 服务端大小限制。
 
 生产使用前应完成真实数据量与目标并发的压测、超时与故障恢复验证。仓库持续集成包含真实三节点副本集、竞态检查、Gin/goctl 集成、主节点切换后读写与事务恢复、漏洞扫描；这些检查不替代业务环境的容量和长期稳定性验证。详细命令与限制见 [性能验证与生产接入](docs/performance.md)。

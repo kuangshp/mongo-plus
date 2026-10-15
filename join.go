@@ -498,8 +498,9 @@ func ScanOne[R any](ctx context.Context, q *Aggregation) (*R, error) {
 	return &list[0], nil
 }
 
-// ScanByPage 对关联和过滤后的最终行分页，使用同一聚合流同时统计总数。
+// ScanByPage 对关联和过滤后的最终行分页，分别执行总数和列表聚合。
 // LeftJoin/InnerJoin 展开为多行时，total 是展开后的行数；Lookup 数组不增加主记录行数。
+// 两次查询默认不保证同一快照；需要一致快照时使用 snapshot 读关注的事务。
 func ScanByPage[R any](ctx context.Context, q *Aggregation, page, size int64) (result []R, total int64, err error) {
 	result = []R{}
 	total, err = q.scanByPage(ctx, &result, page, size)
@@ -612,34 +613,41 @@ func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64
 		return 0, err
 	}
 	offset, limit := DbPage(page, size)
-	list := q.finalStages(mongo.Pipeline{}, sort, offset, limit)
-	base = append(base, bson.D{{Key: "$facet", Value: bson.D{{Key: "items", Value: list}, {Key: "total", Value: mongo.Pipeline{bson.D{{Key: "$count", Value: "value"}}}}}}})
-	cursor, err := q.source.collection.Aggregate(ctx, base, options.Aggregate().SetAllowDiskUse(true))
+	// 分开计数和读取，避免 $facet 将整页打包成一个 BSON 文档及其不可落盘的内存限制。
+	total, err = q.countRows(ctx, base)
+	if err != nil {
+		return 0, err
+	}
+	list := q.finalStages(append(mongo.Pipeline(nil), base...), sort, offset, limit)
+	cursor, err := q.source.collection.Aggregate(ctx, list, options.Aggregate().SetAllowDiskUse(true))
 	if err != nil {
 		return 0, err
 	}
 	defer cursor.Close(ctx)
-	// 按调用者的切片类型构造分页容器，直接使用驱动解码器，保留 Client 的 BSON 编解码配置。
-	envelope := reflect.New(reflect.StructOf([]reflect.StructField{
-		{Name: "Items", Type: value.Type(), Tag: `bson:"items"`},
-		{Name: "Total", Type: reflect.TypeOf([]aggregatePageCount{}), Tag: `bson:"total"`},
-	}))
-	if cursor.Next(ctx) {
-		if err = cursor.Decode(envelope.Interface()); err != nil {
-			return 0, err
-		}
-		counts := envelope.Elem().Field(1).Interface().([]aggregatePageCount)
-		if len(counts) > 0 {
-			total = counts[0].Value
-		}
-	}
-	if err = cursor.Err(); err != nil {
+	// 继续使用 Client 自身的解码配置；只在整页读取成功后替换调用者的结果。
+	items := reflect.New(value.Type())
+	if err = cursor.All(ctx, items.Interface()); err != nil {
 		return 0, err
 	}
-	items := envelope.Elem().Field(0)
-	if items.IsNil() {
-		items.Set(reflect.MakeSlice(value.Type(), 0, 0))
+	if items.Elem().IsNil() {
+		items.Elem().Set(reflect.MakeSlice(value.Type(), 0, 0))
 	}
-	value.Set(items)
+	value.Set(items.Elem())
 	return total, nil
+}
+
+func (q *Aggregation) countRows(ctx context.Context, base mongo.Pipeline) (int64, error) {
+	pipeline := append(append(mongo.Pipeline(nil), base...), bson.D{{Key: "$count", Value: "value"}})
+	cursor, err := q.source.collection.Aggregate(ctx, pipeline, options.Aggregate().SetAllowDiskUse(true))
+	if err != nil {
+		return 0, err
+	}
+	defer cursor.Close(ctx)
+	var count aggregatePageCount
+	if cursor.Next(ctx) {
+		if err = cursor.Decode(&count); err != nil {
+			return 0, err
+		}
+	}
+	return count.Value, cursor.Err()
 }

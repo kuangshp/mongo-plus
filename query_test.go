@@ -27,7 +27,7 @@ func TestQueryGroupingAndSnapshot(t *testing.T) {
 }
 
 func TestUpdatePreservesZeroAndProtectsPaths(t *testing.T) {
-	u, err := buildUpdate(Update(field.NewNumeric[int64]("status").Set(0), field.NewString("name").Set("")).Build(), "_id")
+	u, err := buildUpdate(Update(field.NewNumeric[int64]("status").Set(0), field.NewString("name").Set("")).Build().Operations(), "_id")
 	if err != nil || len(u) != 1 || len(u[0].Value.(bson.D)) != 2 {
 		t.Fatalf("零值更新丢失 %+v %v", u, err)
 	}
@@ -54,6 +54,28 @@ func TestPaginationAndInvalidOptions(t *testing.T) {
 	}
 	if err := Query().WhereOrGroup().Build().validate(); err == nil || !strings.Contains(err.Error(), "不能为空") {
 		t.Fatal(err)
+	}
+}
+
+func TestUseRegistersDefaultDatabase(t *testing.T) {
+	previous := DefaultDB()
+	t.Cleanup(func() { Use(previous) })
+	db := &Database{}
+	Use(db)
+	if DefaultDB() != db {
+		t.Fatal("Use 未注册默认数据库")
+	}
+	Use(nil)
+	if DefaultDB() != nil {
+		t.Fatal("Use(nil) 未清除默认数据库")
+	}
+}
+
+func TestUpdateOptionKeepsGormPlusCallShape(t *testing.T) {
+	built := Update().WithColumns(field.NewNumeric[int64]("status").Value(0), field.NewString("name").Set("")).Build()
+	direct := WithUpdateColumns(field.NewNumeric[int64]("status").Value(0))
+	if len(flattenUpdates([]UpdateOption{built, direct})) != 3 {
+		t.Fatal("更新选项未按 gorm-plus 的单个参数展开")
 	}
 }
 

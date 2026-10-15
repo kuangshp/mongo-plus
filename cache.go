@@ -27,31 +27,21 @@ type cacheFlight[V any] struct {
 	cloneable bool
 }
 type readCache struct {
-	mu       sync.Mutex
-	entries  map[string]cacheEntry
-	epochs   map[string]uint64
-	group    singleflight.Group
-	disabled bool
-	bytes    int64
-	limits   CacheConfig
-	types    map[reflect.Type]uint64
+	mu         sync.Mutex
+	entries    map[string]cacheEntry
+	epochs     map[string]uint64
+	group      singleflight.Group
+	disabled   bool
+	bytes      int64
+	limits     CacheConfig
+	types      map[reflect.Type]uint64
+	generation uint64 // ConfigureCache 后禁止旧在途查询重新填充缓存。
 }
 
-// InvalidateCache 清除该 Database 包装器中指定集合的本机读缓存。
-// 原生 Collection 写入后应调用；多个进程之间不共享此缓存。
+// InvalidateCache 清除同 Client、同数据库的所有包装器中指定集合的读缓存。
+// 原生 Collection 写入后应调用；不同 Client 或进程之间不广播失效。
 func (d *Database) InvalidateCache(collection string) {
-	c := &d.cache
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.epochs == nil {
-		c.epochs = map[string]uint64{}
-	}
-	c.epochs[collection]++
-	for key, entry := range c.entries {
-		if entry.scope == collection {
-			c.remove(key)
-		}
-	}
+	d.invalidatePeers(collection, false)
 }
 
 type txCacheKey struct{}
@@ -66,12 +56,8 @@ func (r *Repository[T, K]) invalidate(ctx context.Context) {
 		return
 	}
 	if mongo.SessionFromContext(ctx) != nil {
-		// 外部 Session 无法获知提交时机，禁用本机缓存以避免提交后的陈旧数据。
-		r.db.cache.mu.Lock()
-		r.db.cache.disabled = true
-		r.db.cache.entries = nil
-		r.db.cache.bytes = 0
-		r.db.cache.mu.Unlock()
+		// 外部 Session 无法获知提交时机，同 Client 同库的包装器都必须禁用。
+		r.db.invalidatePeers(r.config.Name, true)
 		return
 	}
 	r.db.InvalidateCache(r.config.Name)
@@ -84,7 +70,8 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 	c := &db.cache
 	c.mu.Lock()
 	epoch := c.epochs[scope]
-	disabled := c.disabled
+	generation := c.generation
+	disabled := c.disabled || c.limits.Disabled
 	if c.types == nil {
 		c.types = map[reflect.Type]uint64{}
 	}
@@ -103,7 +90,7 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 		return load() // 缓存不能改变原生驱动支持的参数类型。
 	}
 	hash := sha256.Sum256(encoded)
-	cacheKey := fmt.Sprintf("%s/%d/%s/%d/%s", scope, epoch, method, typeID, hex.EncodeToString(hash[:]))
+	cacheKey := fmt.Sprintf("%s/%d/%d/%s/%d/%s", scope, generation, epoch, method, typeID, hex.EncodeToString(hash[:]))
 	decode := func(value any) (V, bool) {
 		typed, ok := value.(*V)
 		if !ok {
@@ -118,6 +105,9 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 		entry, ok := c.entries[cacheKey]
 		if ok && !time.Now().Before(entry.expires) {
 			c.remove(cacheKey)
+			ok = false
+		}
+		if c.disabled || c.limits.Disabled {
 			ok = false
 		}
 		c.mu.Unlock()
@@ -142,7 +132,7 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			limits := c.limits.defaults()
-			if !c.disabled && c.epochs[scope] == epoch && bytes <= limits.MaxEntryBytes && bytes <= limits.MaxBytes {
+			if !c.disabled && !limits.Disabled && c.generation == generation && c.epochs[scope] == epoch && bytes <= limits.MaxEntryBytes && bytes <= limits.MaxBytes {
 				if c.entries == nil {
 					c.entries = map[string]cacheEntry{}
 				}

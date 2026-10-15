@@ -5,7 +5,9 @@
 - Create 直接将准备好的实体交给官方驱动，沿用现有 Client 的 BSONOptions/Registry。自动字段使用明确的 bson 标签；业务字段可使用已配置的 JSON 标签回退或字段编码器。
 - CreateBatch 每块最多 1000 条，使用有序 InsertMany；数字主键每块只访问一次序列表。块内预处理错误不写入该块；数据库写入错误可能产生已确认的成功前缀。已完成的前置块不会自动回滚。
 - 单条自增默认每次按需申请。可选 ID.BlockSize 预分配区间；同一 Database 包装器的同集合仓储共享区间。跨包装器/进程由 MongoDB 原子分配互不重复区间；未消费区间可能产生跳号，提交顺序不等于 ID 顺序。预分配不减弱 majority 写确认。
-- 查询缓存默认关闭。显式开启时，同时限制结果条数、总保留容量和单条容量；容量是 Go 对象估算，不是 RSS 硬限制。多进程和外部写入不会通知本机缓存失效。
+- 所有写方法都检查驱动的 Acknowledged；`w=0` 返回 ErrUnacknowledgedWrite，影响数为 0 时不能忽略该错误。已获确认但未命中仍返回 0、nil。
+- 查询缓存默认关闭。显式开启时，同时限制结果条数、总保留容量和单条容量；容量是 Go 对象估算，不是 RSS 硬限制。同 Client 同库的包装器共享失效通知，保留独立的查询结果和解码配置。跨 Client、多进程或外部写入要求实时读取时，对所有包装器设置 `ConfigureCache(CacheConfig{Disabled: true})`，强制绕过缓存和 SingleFlight。
+- ScanByPage 分别执行计数和列表聚合，列表通过游标逐文档返回，整页可以超过 16 MiB，不使用 facet。单条结果仍受 MongoDB 文档大小限制；两次查询需要一致快照时，通过 Transaction 的可选参数配置 `options.Transaction().SetReadConcern(readconcern.Snapshot())`。
 - schema plan/apply 比较校验规则及 strict/error 状态；不会补齐历史数据，也不会自动替换冲突索引。结构同步不是整体事务。
 
 ## 本地回归与基准

@@ -112,8 +112,14 @@ type UpdateOp struct {
 	Value    any
 }
 
+// Operations 让单个赋值可以直接传给仓储更新方法。
+func (op UpdateOp) Operations() []UpdateOp { return []UpdateOp{op} }
+
 // Set 显式设置字段值，支持零值和空字符串。
 func (f Field[T]) Set(value T) UpdateOp { return UpdateOp{"$set", f.path, value} }
+
+// Value 与 Set 相同，对应 gorm-plus 字段赋值 dao.Field.Value。
+func (f Field[T]) Value(value T) UpdateOp { return f.Set(value) }
 
 // Unset 删除字段。
 func (f Field[T]) Unset() UpdateOp { return UpdateOp{"$unset", f.path, ""} }
