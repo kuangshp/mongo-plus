@@ -1,3 +1,3 @@
 package mongoplus
 
-const Version = "v0.0.2"
+const Version = "v0.0.3"
