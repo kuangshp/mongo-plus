@@ -22,10 +22,14 @@ type (
 	SFCacheCloser             = sf.SFCacheCloser
 	RawValue                  = sf.RawValue
 	MemoryCache               = sf.MemoryCache
+	MemoryCacheConfig         = sf.MemoryCacheConfig
 )
 
 // DefaultSFTTL 是 SF 未传 TTL 时的默认缓存时长。
 var DefaultSFTTL = sf.DefaultSFTTL
+
+// ErrInvalidCacheArgs 表示 SF 参数不能序列化，此时不访问缓存或执行加载函数。
+var ErrInvalidCacheArgs = sf.ErrInvalidCacheArgs
 
 // RegisterCache 注入进程内所有仓储和 SF 查询共用的缓存。重复注册会 panic。
 func RegisterCache(cache SFCache) { sf.RegisterCache(cache) }
@@ -33,8 +37,13 @@ func RegisterCache(cache SFCache) { sf.RegisterCache(cache) }
 // ForceReplaceCache 替换已注册缓存，只用于测试隔离。
 func ForceReplaceCache(cache SFCache) { sf.ForceReplaceCache(cache) }
 
-// NewMemoryCache 创建支持前缀删除的内存缓存。
+// NewMemoryCache 创建最多 1024 条、支持 LRU 和主动过期清理的公共内存缓存。
 func NewMemoryCache() *MemoryCache { return sf.NewMemoryCache() }
+
+// NewMemoryCacheWithConfig 配置公共 SF 的条目上限与主动清理间隔。
+func NewMemoryCacheWithConfig(cfg MemoryCacheConfig) (*MemoryCache, error) {
+	return sf.NewMemoryCacheWithConfig(cfg)
+}
 
 // StopSFCache 关闭并清除 RegisterCache 注入的缓存。
 func StopSFCache() { sf.StopSFCache() }
@@ -59,6 +68,11 @@ func SFNoCache[T any](fn func() (T, error), fnName string, args map[string]any) 
 
 // SFInvalidate 删除与参数完全一致的一条缓存。
 func SFInvalidate(fnName string, args map[string]any) { sf.SFInvalidate(fnName, args) }
+
+// SFInvalidateWithError 与 SFInvalidate 相同，但返回无效参数错误。
+func SFInvalidateWithError(fnName string, args map[string]any) error {
+	return sf.SFInvalidateWithError(fnName, args)
+}
 
 // SFInvalidatePrefix 删除该名称下的全部参数组合。
 func SFInvalidatePrefix(fnName string) { sf.SFInvalidatePrefix(fnName) }

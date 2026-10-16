@@ -41,7 +41,11 @@ func TestRawValueDecodesJSON(t *testing.T) {
 	cache := NewMemoryCache()
 	ForceReplaceCache(cache)
 	t.Cleanup(StopSFCache)
-	cache.Set(cacheKey("User.FindById", map[string]any{"id": 1}), RawValue(`{"id":1}`), time.Minute)
+	key, err := cacheKey("User.FindById", map[string]any{"id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.Set(key, RawValue(`{"id":1}`), time.Minute)
 	got, err := SF(func() (map[string]any, error) {
 		t.Fatal("命中缓存不应回源")
 		return nil, nil

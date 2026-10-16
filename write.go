@@ -3,6 +3,7 @@ package mongoplus
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/kuangshp/mongo-plus/field"
@@ -65,7 +66,7 @@ func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops [
 	}
 	protected = append(protected, r.tenantProtectedFields()...)
 	if r.db != nil && r.db.sensitive != nil {
-		ops, err = r.db.sensitive.rewrite(ops)
+		ops, err = r.db.sensitive.rewrite(ops, reflect.TypeFor[T]())
 		if err != nil {
 			return nil, err
 		}

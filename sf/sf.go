@@ -3,10 +3,10 @@
 package sf
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -17,6 +17,9 @@ import (
 
 // DefaultSFTTL 是 SF 未指定 TTL 时的缓存时长。
 const DefaultSFTTL = 5 * time.Minute
+
+// ErrInvalidCacheArgs 表示参数无法编码；请求不会进入缓存或并发合并，也不会调用 fn。
+var ErrInvalidCacheArgs = errors.New("sf: 参数无法序列化")
 
 // SFCache 是可替换缓存。Get 在缺失或过期时返回 (nil, false)。
 // Set 的 ttl 为 0 时不过期；RawValue 必须逐字节保存并以 RawValue 读出。
@@ -45,105 +48,6 @@ type SFCacheCloser interface {
 // RawValue 表示缓存中已经是序列化字节。
 // 共享缓存的 Get 应返回 RawValue，SF 会按 JSON 还原；仓储读缓存则按 BSON 还原。
 type RawValue []byte
-
-type memoryItem struct {
-	val any
-	exp time.Time
-}
-
-// MemoryCache 是进程内缓存，已支持前缀删除。
-type MemoryCache struct {
-	mu    sync.Mutex
-	items map[string]memoryItem
-}
-
-// NewMemoryCache 创建空的内存缓存。
-func NewMemoryCache() *MemoryCache {
-	return &MemoryCache{items: map[string]memoryItem{}}
-}
-
-func (c *MemoryCache) Get(key string) (any, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	item, ok := c.items[key]
-	if !ok {
-		return nil, false
-	}
-	if !item.exp.IsZero() && !time.Now().Before(item.exp) {
-		delete(c.items, key)
-		return nil, false
-	}
-	return item.val, true
-}
-
-func (c *MemoryCache) Set(key string, val any, ttl time.Duration) {
-	if ttl < 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	item := memoryItem{val: val}
-	if ttl > 0 {
-		item.exp = time.Now().Add(ttl)
-	}
-	c.items[key] = item
-}
-
-func (c *MemoryCache) Del(key string) {
-	c.mu.Lock()
-	delete(c.items, key)
-	c.mu.Unlock()
-}
-
-// GetWithError/SetWithError/DelWithError 与共享后端的错误反馈接口兼容。
-func (c *MemoryCache) GetWithError(ctx context.Context, key string) (any, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, false, err
-	}
-	value, found := c.Get(key)
-	return value, found, nil
-}
-func (c *MemoryCache) SetWithError(ctx context.Context, key string, value any, ttl time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	c.Set(key, value, ttl)
-	return nil
-}
-func (c *MemoryCache) DelWithError(ctx context.Context, key string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	c.Del(key)
-	return nil
-}
-
-// DelByPrefix 删除以 prefix 开头的全部键。
-func (c *MemoryCache) DelByPrefix(prefix string) {
-	c.DelByPrefixes([]string{prefix})
-}
-
-// DelByPrefixes 删除任一前缀下的键。
-func (c *MemoryCache) DelByPrefixes(prefixes []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for key := range c.items {
-		for _, prefix := range prefixes {
-			if prefix != "" && len(key) >= len(prefix) && key[:len(prefix)] == prefix {
-				delete(c.items, key)
-				break
-			}
-		}
-	}
-}
-
-func (c *MemoryCache) DelByPrefixesWithError(ctx context.Context, prefixes []string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	c.DelByPrefixes(prefixes)
-	return nil
-}
 
 var (
 	registryMu sync.Mutex
@@ -235,7 +139,11 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 	if ttl <= 0 {
 		return SFNoCache(fn, fnName, args)
 	}
-	key := cacheKey(fnName, args)
+	key, err := cacheKey(fnName, args)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
 	if value, ok := decode[T](current().Get(key)); ok {
 		return value, nil
 	}
@@ -244,7 +152,12 @@ func SFWithTTL[T any](fn func() (T, error), fnName string, args map[string]any, 
 
 // SFNoCache 只合并同一瞬间的并发调用，不保存结果。
 func SFNoCache[T any](fn func() (T, error), fnName string, args map[string]any) (T, error) {
-	return flight(cacheKey(fnName, args), fn, nil)
+	key, err := cacheKey(fnName, args)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return flight(key, fn, nil)
 }
 
 func flight[T any](key string, fn func() (T, error), store func(T)) (T, error) {
@@ -288,8 +201,19 @@ func decode[T any](value any, ok bool) (T, bool) {
 }
 
 // SFInvalidate 删除一次查询对应的缓存，参数必须与读取时一致。
+// 无法序列化的参数不产生删除操作；需要错误反馈时使用 SFInvalidateWithError。
 func SFInvalidate(fnName string, args map[string]any) {
-	current().Del(cacheKey(fnName, args))
+	_ = SFInvalidateWithError(fnName, args)
+}
+
+// SFInvalidateWithError 删除一次查询的缓存；无效参数返回错误且不删除任何键。
+func SFInvalidateWithError(fnName string, args map[string]any) error {
+	key, err := cacheKey(fnName, args)
+	if err != nil {
+		return err
+	}
+	current().Del(key)
+	return nil
 }
 
 // SFInvalidatePrefix 删除 fnName 下全部参数组合。fnName 末尾加点可避免误删前缀相同的其他名称。
@@ -320,7 +244,7 @@ func SFInvalidatePrefixes(fnNames ...string) {
 	}
 }
 
-func cacheKey(fnName string, args map[string]any) string {
+func cacheKey(fnName string, args map[string]any) (string, error) {
 	keys := make([]string, 0, len(args))
 	for key := range args {
 		keys = append(keys, key)
@@ -330,7 +254,10 @@ func cacheKey(fnName string, args map[string]any) string {
 	for _, key := range keys {
 		ordered = append(ordered, key, args[key])
 	}
-	encoded, _ := json.Marshal(ordered)
+	encoded, err := json.Marshal(ordered)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidCacheArgs, err)
+	}
 	sum := sha256.Sum256(encoded)
-	return "sf:" + fnName + ":" + hex.EncodeToString(sum[:])
+	return "sf:" + fnName + ":" + hex.EncodeToString(sum[:]), nil
 }

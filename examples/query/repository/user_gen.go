@@ -15,6 +15,8 @@ type defaultUserRepository struct {
 }
 
 type iDefaultUserRepository interface {
+	// SensitiveEq 按当前实体的显式配置或标签构造盲索引等值条件。
+	SensitiveEq(logical, value string) mongoplus.Condition
 	// WithTx 绑定本库事务回调的 txCtx，返回保留业务扩展的副本；必须使用返回值。
 	WithTx(txCtx context.Context) UserRepository
 	// Create 创建记录，成功后回填主键和自动字段。
@@ -69,6 +71,10 @@ func (r *customerUserRepository) WithTx(txCtx context.Context) UserRepository {
 
 // 所有生成方法统一经过公共执行器，保留租户、逻辑删除、缓存失效及写入确认检查。
 // 事务读写使用 WithTx(txCtx) 返回的仓储，也可向原仓储方法直接传 txCtx。
+func (r *defaultUserRepository) SensitiveEq(logical, value string) mongoplus.Condition {
+	return r.Repository.SensitiveEq(logical, value)
+}
+
 func (r *defaultUserRepository) Create(ctx context.Context, m *model.UserEntity) error {
 	return r.Repository.Create(ctx, m)
 }

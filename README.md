@@ -865,6 +865,26 @@ err := db.ConfigureCache(mongoplus.CacheConfig{
 
 SingleFlight 的数据库查询使用发起者 Context；发起者取消可能使同组调用者收到错误，其他调用者自己的取消会立即结束等待。
 
+### 公共 SF 与内存缓存
+
+仓储之外使用 `SF`、`SFWithTTL`、`SFNoCache` 时，`args` 必须可被 JSON 序列化，并包含租户、权限范围等所有影响结果的参数。NaN、Inf、循环引用或自定义编码失败会返回 `ErrInvalidCacheArgs`，不会访问缓存、参与并发合并或执行加载函数。`SFInvalidateWithError` 可返回相同的参数错误；兼容入口 `SFInvalidate` 遇到无效参数时不删除任何键。
+
+公共 SF 默认使用 `MemoryCache`，最多保存 1024 条，按 LRU 淘汰，每秒自动回收过期项，无需等待读取。此配置独立于 Repository 的 `CacheConfig`，只限制条目数，不限制载荷字节数；大结果应限制大小或使用共享后端。
+
+```go
+cache, err := mongoplus.NewMemoryCacheWithConfig(mongoplus.MemoryCacheConfig{
+    MaxEntries:      2048,        // 0 使用 1024，不能为负数。
+    CleanupInterval: time.Second, // 0 使用 1 秒，不能为负数。
+})
+if err != nil {
+    return err
+}
+defer cache.Close() // 关闭清理任务并释放条目；关闭后不再保存数据。
+mongoplus.RegisterCache(cache)
+```
+
+`MemoryCache.Set` 的 TTL 为 0 表示不过期，仍受 LRU 容量限制；负数表示不保存。`Len()` 返回实际保留条目数，可用于观察后台回收。`StopSFCache()` 会关闭全局注册的缓存。直接使用公共 SF 的 Go 结果为共享值，调用方应避免修改其中的 map、切片或指针。
+
 ### 控制台命令日志与调用位置
 
 通过连接配置开启类似 GORM 的日志，打印时间、业务调用处的 `文件路径:行号`、耗时、条数和实际 MongoDB 命令（Extended JSON）。终端或 IDE 支持识别路径时可点击跳转；生成的 `_gen.go` 和库内部调用会被跳过。
@@ -1359,6 +1379,35 @@ condition := sensitive.PhoneEq("13800008000") // 条件落在 phone_index。
 ```
 
 `Phone`、`PhoneCipher`、`PhoneIndex` 分别对应业务字段、密文字段和索引字段。未开启 `EncryptAtRest` 时，密文字段保存规范化后的值，索引仍然是 HMAC。更新 `phone` 路径时会改写到密文和索引，不把明文留在业务字段上。
+
+也可以只注册 Key，通过实体标签声明字段。`mongoplus` 和兼容的 `gormplus` 标签均支持；新增、更新、读取和仓储的 `SensitiveEq` 使用同一份实体元数据，不需要在 `Fields` 中重复声明：
+
+```go
+type UserEntity struct {
+    ID          int64  `bson:"_id"`
+    Phone       string `bson:"-" mongoplus:"cipher:PhoneCipher;index:PhoneIndex;encrypt:true"`
+    PhoneCipher string `bson:"encrypted_mobile"`
+    PhoneIndex  string `bson:"mobile_lookup"`
+}
+
+_, err := mongoplus.RegisterSensitive(db, mongoplus.SensitiveConfig{
+    Key: []byte("0123456789abcdef"), // 示例密钥，生产从密钥管理服务读取。
+})
+// userRepository 为当前实体的仓储，SensitiveEq 自动使用 mobile_lookup。
+condition := userRepository.SensitiveEq("Phone", "13800008000")
+```
+
+| 标签属性 | 含义 |
+| --- | --- |
+| `cipher` | 保存值的 Go 字段名，必须为可导出的 string；实际路径使用该字段的 BSON 标签 |
+| `index` | 盲索引 Go 字段名，必须为可导出的 string；实际路径使用该字段的 BSON 标签 |
+| `encrypt` | `true` 开启加密；省略或 `false` 时保存规范化值 |
+
+明文字段使用 `bson:"-"` 避免创建时重复持久化明文。密文和索引字段不能设置 `bson:"-"`；缺少字段或不完整标签会返回错误。不同实体的同名字段独立解析。显式 `SensitiveConfig.Fields` 优先于标签；未显式指定的路径从实体 BSON 标签推导，显式路径保持优先。
+
+`UpdateById`、`UpdateMapById`、`UpdateByWrapper` 支持对逻辑字段执行 Set，并同时刷新密文和盲索引；Unset 同时删除密文和索引。其他操作符和逻辑字段的父子路径更新会报错。等值查询优先使用仓储 `SensitiveEq`；插件的 `Eq`/`PhoneEq` 仍按显式配置或默认约定生成条件，不推断某个实体的标签。升级后重新生成 `_gen.go` 以在生成的仓储接口上使用新方法；手写 mock 需要补充 `SensitiveEq`。
+
+修复不会自动清理旧版本已经写入的明文字段或恢复旧密文。受影响数据应先核对明文、密文与业务记录，再通过独立迁移重建密文和盲索引并删除遗留明文。DAL/Native 原生操作仍由业务负责敏感字段规则。
 
 ### 主从数据源
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/kuangshp/mongo-plus/field"
 )
@@ -58,9 +59,11 @@ type SensitiveConfig struct {
 
 // SensitivePlugin 在写入时生成密文和盲索引，在读出时按权限解密或脱敏。
 type SensitivePlugin struct {
-	cfg   SensitiveConfig
-	aead  cipher.AEAD
-	byKey map[string]SensitiveFieldConfig
+	cfg           SensitiveConfig
+	aead          cipher.AEAD
+	byKey         map[string]SensitiveFieldConfig
+	metadata      sync.Map // 按实体类型隔离标签，避免不同集合的同名字段互相覆盖。
+	explicitPaths map[string][3]bool
 }
 
 type sensitiveModeKey struct{}
@@ -101,11 +104,17 @@ func NewSensitivePlugin(cfg SensitiveConfig) (*SensitivePlugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	plugin := &SensitivePlugin{cfg: cfg, aead: aead, byKey: map[string]SensitiveFieldConfig{}}
+	cfg.Fields = append([]SensitiveFieldConfig(nil), cfg.Fields...)
+	cfg.IndexKey = append([]byte(nil), cfg.IndexKey...)
+	plugin := &SensitivePlugin{cfg: cfg, aead: aead, byKey: map[string]SensitiveFieldConfig{}, explicitPaths: map[string][3]bool{}}
 	for i := range cfg.Fields {
 		item := cfg.Fields[i]
+		plugin.explicitPaths[item.PlainField] = [3]bool{item.PlainPath != "", item.CipherPath != "", item.IndexPath != ""}
 		if item.PlainField == "" || item.CipherField == "" || item.IndexField == "" {
 			return nil, errors.New("PlainField、CipherField 和 IndexField 不能为空")
+		}
+		if item.Mask.Prefix < 0 || item.Mask.Suffix < 0 {
+			return nil, errors.New("敏感字段脱敏长度不能为负数")
 		}
 		if item.Normalize == nil {
 			item.Normalize = strings.TrimSpace
@@ -196,7 +205,11 @@ func (p *SensitivePlugin) IndexValue(logical, value string) string {
 
 func (p *SensitivePlugin) seal(value any) error {
 	return walkSensitive(reflect.ValueOf(value), func(item reflect.Value) error {
-		for _, fieldCfg := range p.fieldsForValue(item) {
+		fields, err := p.fieldsForType(item.Type())
+		if err != nil {
+			return err
+		}
+		for _, fieldCfg := range fields {
 			plain, ok := sensitiveString(item, fieldCfg.PlainField)
 			if !ok || plain == "" {
 				continue
@@ -223,7 +236,11 @@ func (p *SensitivePlugin) seal(value any) error {
 
 func (p *SensitivePlugin) reveal(ctx context.Context, value any) error {
 	return walkSensitive(reflect.ValueOf(value), func(item reflect.Value) error {
-		for _, fieldCfg := range p.fieldsForValue(item) {
+		fields, err := p.fieldsForType(item.Type())
+		if err != nil {
+			return err
+		}
+		for _, fieldCfg := range fields {
 			stored, ok := sensitiveString(item, fieldCfg.CipherField)
 			if !ok || stored == "" {
 				continue
@@ -258,16 +275,43 @@ func (p *SensitivePlugin) reveal(ctx context.Context, value any) error {
 	})
 }
 
-func (p *SensitivePlugin) rewrite(ops []field.UpdateOp) ([]field.UpdateOp, error) {
+func (p *SensitivePlugin) rewrite(ops []field.UpdateOp, entityTypes ...reflect.Type) ([]field.UpdateOp, error) {
 	if p == nil {
 		return ops, nil
 	}
+	fields := p.cfg.Fields
+	if len(entityTypes) > 0 {
+		var err error
+		fields, err = p.fieldsForType(entityTypes[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+	byPath := map[string]SensitiveFieldConfig{}
+	for _, item := range fields {
+		byPath[item.PlainPath] = item
+		byPath[item.PlainField] = item
+	}
 	rewritten := make([]field.UpdateOp, 0, len(ops))
 	for _, op := range ops {
-		item, ok := p.byKey[op.Path]
-		if !ok || op.Operator != "$set" || op.Path != item.PlainPath {
+		item, ok := byPath[op.Path]
+		if !ok {
+			for path := range byPath {
+				if strings.HasPrefix(op.Path, path+".") || strings.HasPrefix(path, op.Path+".") {
+					return nil, fmt.Errorf("敏感字段 %s 不支持父子路径更新", path)
+				}
+			}
 			rewritten = append(rewritten, op)
 			continue
+		}
+		if op.Operator == "$unset" {
+			rewritten = append(rewritten,
+				field.UpdateOp{Operator: "$unset", Path: item.CipherPath, Value: ""},
+				field.UpdateOp{Operator: "$unset", Path: item.IndexPath, Value: ""})
+			continue
+		}
+		if op.Operator != "$set" && op.Operator != "$setOnInsert" {
+			return nil, fmt.Errorf("敏感字段 %s 不支持操作 %s", op.Path, op.Operator)
 		}
 		text, ok := op.Value.(string)
 		if !ok {
@@ -283,22 +327,54 @@ func (p *SensitivePlugin) rewrite(ops []field.UpdateOp) ([]field.UpdateOp, error
 			}
 		}
 		rewritten = append(rewritten,
-			field.UpdateOp{Operator: "$set", Path: item.CipherPath, Value: stored},
-			field.UpdateOp{Operator: "$set", Path: item.IndexPath, Value: blindIndex(p.cfg.IndexKey, text)},
+			field.UpdateOp{Operator: op.Operator, Path: item.CipherPath, Value: stored},
+			field.UpdateOp{Operator: op.Operator, Path: item.IndexPath, Value: blindIndex(p.cfg.IndexKey, text)},
 		)
 	}
 	return rewritten, nil
 }
 
-func (p *SensitivePlugin) fieldsForValue(value reflect.Value) []SensitiveFieldConfig {
-	fields := append([]SensitiveFieldConfig(nil), p.cfg.Fields...)
-	seen := map[string]struct{}{}
-	for _, item := range fields {
-		seen[item.PlainField] = struct{}{}
+type sensitiveMetadata struct {
+	fields []SensitiveFieldConfig
+	err    error
+}
+
+// 新增、更新和查询共用此解析结果；缓存按 Go 实体类型隔离，显式配置优先于标签。
+func (p *SensitivePlugin) fieldsForType(typ reflect.Type) ([]SensitiveFieldConfig, error) {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
 	}
-	for i := 0; i < value.NumField(); i++ {
-		structField := value.Type().Field(i)
-		if _, ok := seen[structField.Name]; ok {
+	if cached, ok := p.metadata.Load(typ); ok {
+		meta := cached.(sensitiveMetadata)
+		return meta.fields, meta.err
+	}
+	fields, err := p.resolveFields(typ)
+	meta, _ := p.metadata.LoadOrStore(typ, sensitiveMetadata{fields: fields, err: err})
+	result := meta.(sensitiveMetadata)
+	return result.fields, result.err
+}
+
+func (p *SensitivePlugin) resolveFields(typ reflect.Type) ([]SensitiveFieldConfig, error) {
+	fields := append([]SensitiveFieldConfig(nil), p.cfg.Fields...)
+	if typ.Kind() != reflect.Struct {
+		return fields, nil
+	}
+	seen := map[string]bool{}
+	for i, item := range fields {
+		seen[item.PlainField] = true
+		paths := p.explicitPaths[item.PlainField]
+		if f, ok := typ.FieldByName(item.PlainField); ok && !paths[0] {
+			fields[i].PlainPath = bsonName(f)
+		}
+		if f, ok := typ.FieldByName(item.CipherField); ok && !paths[1] {
+			fields[i].CipherPath = storedSensitivePath(f)
+		}
+		if f, ok := typ.FieldByName(item.IndexField); ok && !paths[2] {
+			fields[i].IndexPath = storedSensitivePath(f)
+		}
+	}
+	for _, structField := range reflect.VisibleFields(typ) {
+		if seen[structField.Name] {
 			continue
 		}
 		tag := structField.Tag.Get("mongoplus")
@@ -306,19 +382,61 @@ func (p *SensitivePlugin) fieldsForValue(value reflect.Value) []SensitiveFieldCo
 			tag = structField.Tag.Get("gormplus")
 		}
 		options := sensitiveTag(tag)
-		if options["cipher"] == "" || options["index"] == "" {
+		if options["cipher"] == "" && options["index"] == "" {
 			continue
 		}
+		if options["cipher"] == "" || options["index"] == "" {
+			return nil, fmt.Errorf("敏感字段 %s 必须同时配置 cipher 和 index", structField.Name)
+		}
 		item := PhoneField(structField.Name)
-		item.CipherField = options["cipher"]
-		item.IndexField = options["index"]
+		item.CipherField, item.IndexField = options["cipher"], options["index"]
 		item.EncryptAtRest = strings.EqualFold(options["encrypt"], "true")
 		item.PlainPath = bsonName(structField)
-		item.CipherPath = toSnakeCase(item.CipherField)
-		item.IndexPath = toSnakeCase(item.IndexField)
+		cipherField, cipherOK := typ.FieldByName(item.CipherField)
+		indexField, indexOK := typ.FieldByName(item.IndexField)
+		if structField.PkgPath != "" || structField.Type.Kind() != reflect.String ||
+			!cipherOK || !indexOK || cipherField.PkgPath != "" || indexField.PkgPath != "" ||
+			cipherField.Type.Kind() != reflect.String || indexField.Type.Kind() != reflect.String {
+			return nil, fmt.Errorf("敏感字段 %s 的明文、密文和索引必须是可导出的 string 字段", structField.Name)
+		}
+		if strings.Split(cipherField.Tag.Get("bson"), ",")[0] == "-" ||
+			strings.Split(indexField.Tag.Get("bson"), ",")[0] == "-" {
+			return nil, fmt.Errorf("敏感字段 %s 的密文和索引不能配置 bson:\"-\"", structField.Name)
+		}
+		item.CipherPath, item.IndexPath = storedSensitivePath(cipherField), storedSensitivePath(indexField)
+		if item.CipherPath == item.IndexPath || item.PlainPath == item.CipherPath || item.PlainPath == item.IndexPath {
+			return nil, fmt.Errorf("敏感字段 %s 的明文、密文和索引路径不能相同", structField.Name)
+		}
 		fields = append(fields, item)
 	}
-	return fields
+	return fields, nil
+}
+
+func storedSensitivePath(f reflect.StructField) string {
+	if name := strings.Split(f.Tag.Get("bson"), ",")[0]; name != "" {
+		return name
+	}
+	// MongoDB 驱动未指定 BSON 标签时使用 Go 字段名的小写形式。
+	return strings.ToLower(f.Name)
+}
+
+// SensitiveEq 按当前仓储实体的配置或标签生成盲索引等值条件，支持自定义 BSON 字段名。
+// 无插件、未声明字段或无效标签都会生成带错误的条件，查询会在发送到数据库前失败。
+func (r *Repository[T, K]) SensitiveEq(logical, value string) Condition {
+	if r == nil || r.db == nil || r.db.sensitive == nil {
+		return Condition{Err: errors.New("敏感字段插件未注册")}
+	}
+	p := r.db.sensitive
+	fields, err := p.fieldsForType(reflect.TypeFor[T]())
+	if err != nil {
+		return Condition{Err: err}
+	}
+	for _, item := range fields {
+		if logical == item.PlainField || logical == item.PlainPath || logical == item.IndexField || logical == item.IndexPath {
+			return field.New[string](item.IndexPath).Eq(blindIndex(p.cfg.IndexKey, item.Normalize(value)))
+		}
+	}
+	return Condition{Err: fmt.Errorf("实体未声明敏感字段 %s", logical)}
 }
 
 func (p *SensitivePlugin) encrypt(plain string) (string, error) {
@@ -373,7 +491,7 @@ func toSnakeCase(value string) string {
 
 func maskSensitive(value string, cfg SensitiveMaskConfig) string {
 	runes := []rune(value)
-	if cfg.Prefix+cfg.Suffix >= len(runes) {
+	if cfg.Prefix >= len(runes) || cfg.Suffix >= len(runes)-cfg.Prefix {
 		return strings.Repeat(cfg.Replacement, len(runes))
 	}
 	return string(runes[:cfg.Prefix]) + strings.Repeat(cfg.Replacement, len(runes)-cfg.Prefix-cfg.Suffix) + string(runes[len(runes)-cfg.Suffix:])

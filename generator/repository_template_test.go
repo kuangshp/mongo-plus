@@ -75,6 +75,9 @@ func TestExplicitPublicContract(t *testing.T) {
         }
     }
     contract := reflect.TypeOf((*mongoplus.Contract[model.UserEntity,int64])(nil)).Elem()
+	if !signatures["SensitiveEq"] || !implementations["SensitiveEq"] {
+		t.Fatal("敏感字段条件必须通过生成的 Repository 接口可用")
+	}
     for i:=0;i<contract.NumMethod();i++ {
         method:=contract.Method(i)
         if method.PkgPath!="" { continue }

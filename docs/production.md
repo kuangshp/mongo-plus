@@ -56,6 +56,18 @@ db.CacheObserver = func(ctx context.Context, event mongoplus.CacheEvent) {
 
 恢复队列在当前进程内存中，不是持久化一致性协议。其他实例在故障恢复窗口或写进程崩溃后仍可能命中旧值。跨实例强一致的关键状态查询应使用 `CacheConfig{Disabled: true}`，它会忽略调用方的 `WithCache` 和 `WithSingleFlight`。数据库写入成功后发生缓存错误，不应重放业务写入；使用监控和恢复接口处理缓存。
 
+## 公共 SF 参数与内存上限
+
+`SF`、`SFWithTTL` 和 `SFNoCache` 会检查 JSON 参数序列化错误。NaN、Inf、循环引用和自定义编码失败返回 `ErrInvalidCacheArgs`，不会执行加载函数，也不参与缓存或请求合并。调用方应修正参数，不能丢弃错误后把返回零值当作有效数据。租户和权限范围仍必须显式包含在 Args 中。
+
+默认 `MemoryCache` 上限为 1024 条，使用 LRU，每秒主动清理过期项。通过 `NewMemoryCacheWithConfig` 调整 `MaxEntries` 和 `CleanupInterval`；两者的零值分别使用上述默认值，负值返回错误。TTL 为 0 的条目也可能被容量淘汰。这是条目数上限，不是字节或 RSS 上限；不要用公共 SF 无限制地缓存大集合。`Len()` 可观察实际保留数量；结束使用时 `Close()`，或用 `StopSFCache()` 关闭全局缓存。
+
+## 敏感字段标签升级
+
+新增、更新、读取及仓储 `SensitiveEq` 共用按实体类型隔离的字段元数据。仅使用实体标签时，无需重复填写 `SensitiveConfig.Fields`。密文与盲索引使用实体 BSON 路径；不同实体的同名业务字段不会互相覆盖。字段配置、操作符及生成接口的升级说明见 [敏感字段](../README.md#敏感字段)。
+
+此修复阻止后续标签字段更新直接写入明文，但不会自动清洗既有数据。上线前检查受影响集合是否存在遗留业务明文字段，并核对它与旧密文的实际新旧关系；先备份，再以独立迁移重建密文与盲索引、删除遗留明文、通知缓存失效，最后验证脱敏与授权读取。不要简单假设旧密文或遗留明文中的任意一方总是正确。
+
 ## 独立版本迁移
 
 不要将生产 `schema apply` 放在每个服务实例的启动流程中。复制 [迁移命令示例](../examples/migrations/main.go) 到业务项目的 `cmd/migrate`，每个版本放一个独立 Go 文件，并使用 `go:embed` 嵌入其源码计算 `migration.Checksum`。这样追加新版本不会改变旧迁移的校验和。
