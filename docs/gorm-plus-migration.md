@@ -137,15 +137,19 @@ err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
 
 事务要求副本集或分片集群，所有 Repository 必须共用同一 Client。驱动可能重试回调；事务内不要并行使用 Session，也不要执行不可重复的外部副作用。事务中的读取跳过本机缓存，事务结束后失效涉及的集合缓存。
 
-## 缓存与数据库特有功能
+## 缓存、数据权限与数据库特有功能
 
-`WithSingleFlight()` 或 `WithSingleFlight(0)` 仅合并并发；正 TTL 启用缓存。`WithCache(ttl)` 显式设置缓存 TTL；同一构造器同时使用两者时，显式缓存 TTL 优先。过滤条件、投影、排序、分页和租户自动进入缓存键，写操作自动失效相关集合缓存，不需要迁移 gorm-plus 的手工条件缓存参数。
+`WithSingleFlight()` 或 `WithSingleFlight(0)` 仅合并并发；正 TTL 启用缓存。`WithCache(ttl)` 显式设置缓存 TTL。过滤条件、投影、排序、分页和租户自动进入缓存键。写操作会失效本机缓存。调用 `RegisterCache` 或 `db.UseCache` 注入共享缓存后，默认仍按 Database 包装器隔离；同一实际数据源的各实例应在启动时配置相同的 `CacheConfig{Namespace: "orders-prod-primary"}`，不同环境和数据源使用不同 Namespace。仓储通过集合版本隔离旧在途查询，后端只需实现 `Get/Set/Del`，其中 `Set(..., 0)` 表示版本键不过期；前缀删除是可选的空间回收能力。Redis 的实现示例在 `examples/redis-cache/cache.go`。`SF`、`SFInvalidate` 和 `SFInvalidatePrefix` 用于仓储之外的手动查询，它们的前缀失效仍要求后端实现前缀删除。
 
-同 Client 同库的包装器共享失效通知。跨 Client、多个服务实例或外部写入要求实时读取时，对所有包装器调用 `db.ConfigureCache(mongoplus.CacheConfig{Disabled: true})`，业务层即使继续传缓存选项也会直读数据库。
+`RegisterDataPermission` 配合 `WithDataPermission` 为查询、更新和删除追加集合级条件。`SkipDataPermission` 只用于受控的全量访问。`RegisterSensitive` 在写入时保存密文或规范化值和盲索引，读出时默认脱敏；等值查询使用 `plugin.Eq` 或 `plugin.PhoneEq`。敏感字段的展示在缓存返回独立副本后按当前请求处理，明文、脱敏和密文请求不会串用展示结果。`RegisterSlowQuery` 在现有 `Observer` 之外记录超过阈值的集合操作，应在设置 `Observer` 之后注册。
 
-所有创建、更新、删除和恢复方法统一检查写入确认；`w=0` 返回 `ErrUnacknowledgedWrite`，不能把删除返回的 0 当作已确认未命中。聚合分页不再使用 facet，而是执行计数与列表两个聚合；需要一致快照时，通过 Transaction/TransactionAs 的可选参数传入官方 `options.Transaction().SetReadConcern(readconcern.Snapshot())`。
+`DS.Register` 接收已经连接好的主库和从库。`DS.Auto(ctx)` 根据 `DSWithName`、`DSWithRead` 和 `DSWithWrite` 选择数据库；写标记优先，没有从库时读操作回到主库。从库的读偏好写在它自己的连接 URI 中。
 
-SQL 的 `ForUpdate`、GORM clause、savepoint、DAL SQL、GORM 插件不能直接作用于 MongoDB。相应业务逻辑需要按 MongoDB 的原子更新、Session 事务、聚合管道或 Repository 扩展实现。关联查询中的集合使用各自的 Repository 规则来保留租户和逻辑删除隔离。
+`NewDal` 加载 JSON 查询文件，调用名与 gorm-plus 的 DAL 对应：`DALQuery`、`DALQueryOne`、`DALQueryPage`、`DALExec` 和 `DALWithTx`。文件内容是集合、操作和 BSON，占位符使用 `?` 或 `@name`，不是 SQL。分页计数文件名为数据文件名前加 `count_`。文件中的查询不会自动追加租户和逻辑删除，需要在文件里写明。`DALWithTx` 的回调参数是事务 Context，后续 DAL 调用继续传这个 Context。
+
+SQL 的 `ForUpdate`、隔离级别、savepoint 和 GORM clause 没有对应的 MongoDB 语义，不能通过封装模拟行锁。事务的读关注和写关注继续使用官方 `options.Transaction()`。
+
+同 Client 同库的包装器共享本机失效通知。未注入共享缓存时，跨进程写入要求实时读取，可以对包装器调用 `db.ConfigureCache(mongoplus.CacheConfig{Disabled: true})`。
 
 本次对齐也修正了旧 mongo-plus 的两处语义：`BetweenIfNotZero` 不再应用单边非零范围；`OrWhereIf(true, a, b)` 不再将 a/b 隐式组成 AND 分组。已有 mongo-plus 调用若依赖旧行为，应分别改用显式 `Gte/Lte` 和 `OrGroup(a, b)`。
 

@@ -18,6 +18,7 @@ import (
 const DefaultSFTTL = 5 * time.Minute
 
 // SFCache 是可替换缓存。Get 在缺失或过期时返回 (nil, false)。
+// Set 的 ttl 为 0 时不过期；RawValue 必须逐字节保存并以 RawValue 读出。
 type SFCache interface {
 	Get(key string) (any, bool)
 	Set(key string, val any, ttl time.Duration)

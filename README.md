@@ -682,11 +682,20 @@ users, err := userRepository.FindList(ctx,
 )
 ```
 
-默认关闭读缓存。WithCache 自动合并相同在途查询；WithSingleFlight 只合并请求，不保存结果。缓存键包含租户、过滤、投影、排序和分页，不需要手写 Args。返回已解码 Go 值的独立深拷贝，调用方修改嵌套切片、map、指针不会污染缓存，也不会二次使用默认 BSON 编解码器。无法安全复制的自定义私有引用类型和循环引用绕过共享，不改变正常查询结果。
+默认关闭读缓存。WithCache 自动合并相同在途查询；WithSingleFlight 只合并请求，不保存结果。缓存键包含租户、过滤、投影、排序和分页，不需要手写 Args。本机缓存返回已解码 Go 值的独立深拷贝，调用方修改嵌套切片、map、指针不会污染缓存，也不会二次使用默认 BSON 编解码器。无法安全复制的自定义私有引用类型和循环引用绕过共享，不改变正常查询结果。敏感字段在取得独立副本后，按当前请求的 Context 或 ReturnModeResolver 决定明文、脱敏或密文形式；缓存和 SingleFlight 不共享已经按某个请求权限处理的结果。
 
 每个 Database 包装器独立保存查询结果，默认最多保留 1024 条结果、约 64 MiB 保留对象，单条最多约 1 MiB，使用 TTL。超出单条限制仍正常返回，只是不进入缓存；总容量不足时清理过期结果并淘汰已有结果。容量按 Go 对象保守估算，不包含在途查询、驱动缓冲区和运行时额外开销，不是进程内存的硬上限。同一个 Client、同一个数据库的所有包装器共享集合失效通知，写操作返回前同步清除其他包装器中的相关缓存，并阻止旧的在途读取重新填充。结果、解码配置和容量配置不跨包装器共享。Transaction 内跳过读缓存，在事务结束后通知相关包装器失效。外部 Session 写入无法获知提交时刻，会关闭同 Client 同库包装器的本机缓存；需要缓存的事务请使用本库 Transaction。
 
-不同 Client、不同进程或外部程序写入不会自动广播失效。要求这些场景实时读取数据库时，在启动时调用 `db.ConfigureCache(mongoplus.CacheConfig{Disabled: true})`：即使业务代码传入 WithCache 或 WithSingleFlight，也始终直读数据库，不共享在途结果。所有业务 Database 包装器均应配置该选项；省略时保留本机 TTL 缓存的原有行为。本版没有内置分布式缓存后端。通过 Native 写入后，需要调用 `db.InvalidateCache(collection)` 通知同 Client 同库的包装器；原生写入也需要自行处理租户、审计和逻辑删除。
+未注入共享缓存时，不同 Client、不同进程或外部程序写入不会自动广播失效。要求这些场景实时读取数据库时，在启动时调用 `db.ConfigureCache(mongoplus.CacheConfig{Disabled: true})`：即使业务代码传入 WithCache 或 WithSingleFlight，也始终直读数据库，不共享在途结果。所有业务 Database 包装器均应配置该选项。通过 Native 写入后，需要调用 `db.InvalidateCache(collection)`；原生写入也需要自行处理租户、审计和逻辑删除。
+
+通过 `RegisterCache` 或 `db.UseCache` 可以注入 Redis 等 `SFCache` 后端，实现示例见 `examples/redis-cache/cache.go`。共享缓存默认使用每个 Database 包装器独有的随机命名空间，避免同名数据库位于不同数据源时串数据。需要跨包装器、Client 或进程共享结果时，启动时为同一实际数据源显式配置相同 Namespace；不同环境、集群、账号权限或编解码配置使用不同 Namespace：
+
+```go
+db.UseCache(sharedCache) // 也可以在启动时统一 RegisterCache(sharedCache)。
+err := db.ConfigureCache(mongoplus.CacheConfig{Namespace: "orders-prod-primary"})
+```
+
+仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。可选的前缀删除只负责回收旧条目，未实现时旧数据条目按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。后端读写失败时 SFCache 接口不能报告失效错误，因此仍需实时强一致的场景应使用 Disabled；外部程序写入后也必须通知失效。共享缓存的总容量由后端管理，单条结果仍遵守 MaxEntryBytes 限制。
 
 可在启动时调整缓存容量，缓存仍由每次查询的 WithCache 显式开启：
 
@@ -699,6 +708,56 @@ err := db.ConfigureCache(mongoplus.CacheConfig{
 ```
 
 SingleFlight 的数据库查询使用发起者 Context；发起者取消可能使同组调用者收到错误，其他调用者自己的取消会立即结束等待。
+
+### 控制台命令日志与调用位置
+
+通过连接配置开启类似 GORM 的日志，打印时间、业务调用处的 `文件路径:行号`、耗时、条数和实际 MongoDB 命令（Extended JSON）。终端或 IDE 支持识别路径时可点击跳转；生成的 `_gen.go` 和库内部调用会被跳过。
+
+```go
+db, err := mongoplus.Connect(ctx, mongoplus.Config{
+    URI:      "mongodb://127.0.0.1:27017",
+    Database: "shop",
+    Log: mongoplus.LogConfig{
+        Level:           mongoplus.LogInfo, // info 全部命令，warn 慢命令和错误，error 仅错误。
+        SlowThresholdMS: 200,               // 0 使用 200ms。
+        Colorful:        true,              // 可选 ANSI 颜色；默认 false。
+    },
+})
+if err != nil { return err }
+```
+
+使用 YAML 加载 `mongoplus.Config` 时对应配置为：
+
+```yaml
+mongodb:
+  uri: mongodb://127.0.0.1:27017
+  database: shop
+  log:
+    level: info
+    slowThresholdMs: 200
+    colorful: true
+```
+
+输出格式如下（实际命令还可能包含 Session 等驱动字段）：
+
+```text
+2026/10/16 10:20:30 /work/shop/internal/service/user.go:77
+[2.135ms] [rows:1] shop.find {"find":"users","filter":{"name":"Alice"},"limit":1}
+```
+
+默认 `level` 为空或 `silent` 时关闭日志；日志默认写入标准输出。可通过 Go 配置的 `Writer` 接入输出流，例如 `Writer: log.Writer()` 复用项目标准库日志的目标。go-zero 模板已包含 `MongoConfig.Log` 配置，生成服务后修改对应 YAML 即可；独立的命令日志不自动受服务顶层 `Log` 或 `LogRotation` 控制。
+
+使用已有官方驱动连接时，需要在创建 Client 前安装监控器：
+
+```go
+monitor, err := mongoplus.NewCommandLogger(mongoplus.LogConfig{Level: mongoplus.LogInfo})
+if err != nil { return err }
+client, err := mongo.Connect(options.Client().ApplyURI(uri).SetMonitor(monitor))
+if err != nil { return err }
+db := mongoplus.NewDatabase(client.Database("shop"))
+```
+
+监控器覆盖 Client 的所有数据库及原生命令调用，需在连接创建前配置；已有自定义 `CommandMonitor` 时应组合回调，避免被 `SetMonitor` 替换。命中缓存时没有数据库命令，因此不输出命令日志；启用 SingleFlight 的查询仍保留发起者的业务位置。耗时是驱动单条命令的耗时，重试和游标 `getMore` 会分别打印。读命令的 `rows` 是本批返回数量，写命令取服务器返回的 `n`（更新时为匹配条数），未知时显示 `-`。命令参数会原样输出，按需开启。使用 `-trimpath` 构建时，运行时路径可能无法映射到本机源文件。
 
 ```go
 db.Observer = func(ctx context.Context, event mongoplus.Observation) {

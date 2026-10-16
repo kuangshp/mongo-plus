@@ -5,10 +5,11 @@ import "fmt"
 // CacheConfig 限制本机 TTL 缓存；零值使用默认值，不会自动开启查询缓存。
 // 字节数按保留的 Go 对象保守估算，不是进程内存的硬上限。
 type CacheConfig struct {
-	Disabled      bool  // 强一致、多实例或外部写入场景：忽略 WithCache/WithSingleFlight，始终直读数据库。
-	MaxEntries    int   // 默认 1024 条结果。
-	MaxBytes      int64 // 默认 64 MiB。
-	MaxEntryBytes int64 // 默认单条结果 1 MiB；超出时仍正常返回查询结果。
+	Namespace     string // 共享缓存的数据源标识；留空时按 Database 包装器隔离。跨进程共享必须显式设置相同标识。
+	Disabled      bool   // 强一致、多实例或外部写入场景：忽略 WithCache/WithSingleFlight，始终直读数据库。
+	MaxEntries    int    // 默认 1024 条结果。
+	MaxBytes      int64  // 默认 64 MiB。
+	MaxEntryBytes int64  // 默认单条结果 1 MiB；超出时仍正常返回查询结果。
 }
 
 func (c CacheConfig) defaults() CacheConfig {

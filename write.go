@@ -59,6 +59,12 @@ func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops [
 			protected = append(protected, p)
 		}
 	}
+	if r.db != nil && r.db.sensitive != nil {
+		ops, err = r.db.sensitive.rewrite(ops)
+		if err != nil {
+			return nil, err
+		}
+	}
 	update, err := buildUpdate(ops, protected...)
 	if err != nil {
 		return nil, err

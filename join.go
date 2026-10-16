@@ -572,6 +572,13 @@ func scanDestination(dest any) (reflect.Value, error) {
 	return value.Elem(), nil
 }
 
+func (q *Aggregation) reveal(ctx context.Context, value any) error {
+	if q == nil || q.source.db == nil || q.source.db.sensitive == nil {
+		return nil
+	}
+	return q.source.db.sensitive.reveal(ctx, value)
+}
+
 func (q *Aggregation) scan(ctx context.Context, dest any) (err error) {
 	ctx = resolveContext(ctx)
 	end := q.observe(ctx, "Scan")
@@ -592,6 +599,9 @@ func (q *Aggregation) scan(ctx context.Context, dest any) (err error) {
 	err = cursor.All(ctx, dest)
 	if err == nil && value.IsNil() {
 		value.Set(reflect.MakeSlice(value.Type(), 0, 0))
+	}
+	if err == nil {
+		err = q.reveal(ctx, dest)
 	}
 	return err
 }
@@ -631,6 +641,9 @@ func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64
 	}
 	if items.Elem().IsNil() {
 		items.Elem().Set(reflect.MakeSlice(value.Type(), 0, 0))
+	}
+	if err = q.reveal(ctx, items.Interface()); err != nil {
+		return 0, err
 	}
 	value.Set(items.Elem())
 	return total, nil

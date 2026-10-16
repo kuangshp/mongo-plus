@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kuangshp/mongo-plus/internal/settings"
+	"github.com/kuangshp/mongo-plus/sf"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -50,6 +51,17 @@ type CollectionConfig = settings.CollectionConfig
 // Config 是运行时 MongoDB 连接配置，与 GeneratorConfig 分开。
 type Config = settings.Config
 
+// LogConfig 配置控制台命令日志，LogLevel 零值默认关闭。
+type LogConfig = settings.LogConfig
+type LogLevel = settings.LogLevel
+
+const (
+	LogSilent = settings.LogSilent
+	LogError  = settings.LogError
+	LogWarn   = settings.LogWarn
+	LogInfo   = settings.LogInfo
+)
+
 // Observation 描述一次数据库操作，默认不记录文档和敏感参数。
 type Observation struct {
 	Collection string
@@ -63,10 +75,13 @@ type Observer func(context.Context, Observation)
 
 // Database 持有可复用的驱动数据库和可选监控回调。
 type Database struct {
-	native    *mongo.Database
-	cache     readCache
-	sequences sync.Map // 集合名 -> 本包装器共享的预分配号码区间。
-	Observer  Observer
+	native     *mongo.Database
+	cache      readCache
+	cacheStore sf.SFCache
+	sequences  sync.Map // 集合名 -> 本包装器共享的预分配号码区间。
+	Observer   Observer
+	permission *dataPermission
+	sensitive  *SensitivePlugin
 }
 
 // Connect 建立连接并 Ping；连接池由官方 Client 管理。
@@ -75,6 +90,13 @@ func Connect(ctx context.Context, c Config) (*Database, error) {
 		return nil, fmt.Errorf("uri、database 不能为空")
 	}
 	opts := options.Client().ApplyURI(c.URI)
+	monitor, err := NewCommandLogger(c.Log)
+	if err != nil {
+		return nil, err
+	}
+	if monitor != nil {
+		opts.SetMonitor(monitor)
+	}
 	if c.MaxPoolSize > 0 {
 		opts.SetMaxPoolSize(c.MaxPoolSize)
 	}

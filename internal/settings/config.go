@@ -3,6 +3,7 @@ package settings
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -84,4 +85,24 @@ type Config struct {
 	Database    string        `json:"database" yaml:"database"`
 	MaxPoolSize uint64        `json:"maxPoolSize" yaml:"maxPoolSize"`
 	Timeout     time.Duration `json:"-" yaml:"-"`
+	Log         LogConfig     `json:"log,optional" yaml:"log"`
+}
+
+// LogLevel 控制 MongoDB 命令日志；零值关闭。
+type LogLevel string
+
+const (
+	LogSilent LogLevel = "silent"
+	LogError  LogLevel = "error"
+	LogWarn   LogLevel = "warn"
+	LogInfo   LogLevel = "info"
+)
+
+// LogConfig 配置驱动命令日志。info 输出全部，warn 输出慢命令和错误，error 仅输出错误。
+// 日志含实际命令参数；Writer 仅通过 Go 设置，默认输出到 os.Stdout。
+type LogConfig struct {
+	Level           LogLevel  `json:"level,optional" yaml:"level"`
+	SlowThresholdMS int64     `json:"slowThresholdMs,optional" yaml:"slowThresholdMs"` // 0 使用 200ms。
+	Colorful        bool      `json:"colorful,optional" yaml:"colorful"`
+	Writer          io.Writer `json:"-" yaml:"-"`
 }

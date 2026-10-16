@@ -29,6 +29,7 @@ func NewServiceContext(c {{.config}}) *ServiceContext {
 		db, err = mongoplus.Connect(ctx, mongoplus.Config{
 			URI: c.MongoConfig.URI, Database: c.MongoConfig.Database,
 			MaxPoolSize: c.MongoConfig.MaxPoolSize, Timeout: timeout,
+			Log: c.MongoConfig.Log,
 		})
 		if err != nil { panic(fmt.Errorf("初始化 MongoDB 失败: %w", err)) }
 	}

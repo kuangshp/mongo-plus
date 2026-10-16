@@ -72,6 +72,13 @@ func MustRepository[T any, K ID](db *Database, c CollectionConfig) *Repository[T
 // Native 返回官方 Collection；原生操作需要业务自行处理租户、软删除等规则。
 func (r *Repository[T, K]) Native() *mongo.Collection { return r.collection }
 
+func (r *Repository[T, K]) reveal(ctx context.Context, value any) error {
+	if r == nil || r.db == nil || r.db.sensitive == nil {
+		return nil
+	}
+	return r.db.sensitive.reveal(ctx, value)
+}
+
 func (r *Repository[T, K]) observe(ctx context.Context, operation string) func(error) {
 	start := time.Now()
 	return func(err error) {
@@ -110,6 +117,15 @@ func (r *Repository[T, K]) filter(ctx context.Context, o QueryOption, write bool
 			conditions = append(conditions, field.New[any]("deleted_at").IsNull())
 		case 2:
 			conditions = append(conditions, field.And(field.New[any]("deleted_at").Exists(true), field.New[any]("deleted_at").Neq(nil)))
+		}
+	}
+	if r.db != nil && r.db.permission != nil {
+		extra, err := r.db.permission.apply(ctx, r.config.Name)
+		if err != nil {
+			return nil, err
+		}
+		if len(extra) > 0 {
+			conditions = append(conditions, Condition{Document: extra})
 		}
 	}
 	if len(conditions) == 0 {
@@ -223,6 +239,9 @@ func (r *Repository[T, K]) Walk(ctx context.Context, fn func(*T) error, opts ...
 	for cursor.Next(ctx) {
 		entity := new(T)
 		if err = cursor.Decode(entity); err != nil {
+			return err
+		}
+		if err = r.reveal(ctx, entity); err != nil {
 			return err
 		}
 		if err = fn(entity); err != nil {

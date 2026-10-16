@@ -130,7 +130,11 @@ func LoadConfig(path string) (Config, error) {
 }
 
 // HasMongoDB 表示生成器是否提供数据源；未提供时只生成代码。
-func (c Config) HasMongoDB() bool { return c.MongoDB != (settings.Config{}) }
+func (c Config) HasMongoDB() bool {
+	m := c.MongoDB
+	return m.URI != "" || m.Database != "" || m.MaxPoolSize != 0 || m.Timeout != 0 ||
+		m.Log.Level != "" || m.Log.SlowThresholdMS != 0 || m.Log.Colorful || m.Log.Writer != nil
+}
 
 // Normalize 补全路径和全局默认；逻辑删除、时间字段默认开启。
 func (c *Config) Normalize() error {

@@ -36,6 +36,7 @@ type readCache struct {
 	limits     CacheConfig
 	types      map[reflect.Type]uint64
 	generation uint64 // ConfigureCache 后禁止旧在途查询重新填充缓存。
+	namespace  string // 未显式指定 Namespace 时使用不可复用的随机标识。
 }
 
 // InvalidateCache 清除同 Client、同数据库的所有包装器中指定集合的读缓存。
@@ -90,6 +91,9 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 		return load() // 缓存不能改变原生驱动支持的参数类型。
 	}
 	hash := sha256.Sum256(encoded)
+	if store := activeCacheStore(db); store != nil && o.cacheTTL > 0 {
+		return readSharedCache(ctx, c, store, db, scope, method, hex.EncodeToString(hash[:]), epoch, generation, o, load)
+	}
 	cacheKey := fmt.Sprintf("%s/%d/%d/%s/%d/%s", scope, generation, epoch, method, typeID, hex.EncodeToString(hash[:]))
 	decode := func(value any) (V, bool) {
 		typed, ok := value.(*V)
@@ -188,7 +192,16 @@ func (r *Repository[T, K]) FindOne(ctx context.Context, opts ...QueryOption) (*T
 	if err != nil {
 		return nil, err
 	}
-	return readCached(ctx, r.db, r.config.Name, "FindOne", key, o, func() (*T, error) { return r.findOne(ctx, opts...) })
+	ctx = cachedCommandContext(ctx, o)
+	entity, err := readCached(ctx, r.db, r.config.Name, "FindOne", key, o, func() (*T, error) { return r.findOne(ctx, opts...) })
+	if err != nil {
+		return nil, err
+	}
+	// 缓存只保存数据库读出的原始值；每个请求在自己的副本上决定解密或脱敏。
+	if err = r.reveal(ctx, entity); err != nil {
+		return nil, err
+	}
+	return entity, nil
 }
 
 // FindList 获取列表；默认直接读取数据库。
@@ -198,7 +211,15 @@ func (r *Repository[T, K]) FindList(ctx context.Context, opts ...QueryOption) ([
 	if err != nil {
 		return nil, err
 	}
-	return readCached(ctx, r.db, r.config.Name, "FindList", key, o, func() ([]*T, error) { return r.findList(ctx, opts...) })
+	ctx = cachedCommandContext(ctx, o)
+	entities, err := readCached(ctx, r.db, r.config.Name, "FindList", key, o, func() ([]*T, error) { return r.findList(ctx, opts...) })
+	if err != nil {
+		return nil, err
+	}
+	if err = r.reveal(ctx, entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
 }
 
 // Count 统计记录；读缓存默认关闭。
@@ -208,6 +229,7 @@ func (r *Repository[T, K]) Count(ctx context.Context, opts ...QueryOption) (int6
 	if err != nil {
 		return 0, err
 	}
+	ctx = cachedCommandContext(ctx, o)
 	return readCached(ctx, r.db, r.config.Name, "Count", key, o, func() (int64, error) { return r.count(ctx, opts...) })
 }
 
@@ -218,5 +240,6 @@ func (r *Repository[T, K]) Exists(ctx context.Context, opts ...QueryOption) (boo
 	if err != nil {
 		return false, err
 	}
+	ctx = cachedCommandContext(ctx, o)
 	return readCached(ctx, r.db, r.config.Name, "Exists", key, o, func() (bool, error) { return r.exists(ctx, opts...) })
 }

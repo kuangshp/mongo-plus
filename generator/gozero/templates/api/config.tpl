@@ -2,6 +2,7 @@ package config
 
 import (
     {{.authImport}}
+    mongoplus "github.com/kuangshp/mongo-plus"
     "github.com/kuangshp/mongo-plus/httpcors"
     "github.com/kuangshp/mongo-plus/httpresponse"
     "github.com/kuangshp/mongo-plus/httpstatic"
@@ -28,4 +29,5 @@ type MongoConfig struct {
 	Database string `json:",optional"`
 	MaxPoolSize uint64 `json:",default=100"`
 	TimeoutSeconds int64 `json:",default=10"`
+	Log mongoplus.LogConfig `json:",optional"` // MongoDB 命令日志，默认关闭。
 }

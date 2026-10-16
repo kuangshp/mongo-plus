@@ -129,6 +129,11 @@ func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any)
 			extra[f.Key] = f.Value
 		}
 	}
+	if r.db != nil && r.db.sensitive != nil {
+		if err := r.db.sensitive.seal(copy); err != nil {
+			return preparedCreate[T]{}, err
+		}
+	}
 	var document any = copy
 	if len(extra) > 0 {
 		// 兼容只在数据库维护的自动字段；正常生成的实体直接交给驱动编码。

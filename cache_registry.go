@@ -97,5 +97,6 @@ func (d *Database) invalidatePeers(collection string, disable bool) {
 		}
 		c.mu.Unlock()
 	}
+	deleteSharedCache(peers, collection)
 	runtime.KeepAlive(d)
 }

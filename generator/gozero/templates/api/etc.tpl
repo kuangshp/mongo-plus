@@ -5,11 +5,15 @@ Port: {{.port}}
 # MongoDB 运行时连接；URI 可通过部署配置或 go-zero 的环境变量加载方式注入。
 # 使用 JSON 生成 Entity/DAO/Repository 的配置放在 mongo-plus.yaml，避免与 HTTP 配置混淆。
 MongoConfig:
-  Enabled: false # 使用 MongoDB 业务接口时开启；关闭时 ServiceContext.MongoDB 为 nil。
+  Enabled: true # 使用 MongoDB 业务接口时开启；关闭时 ServiceContext.MongoDB 为 nil。
   URI: "mongodb://127.0.0.1:27017" # 事务需要副本集或支持事务的分片集群。
   Database: "" # 开启前必填，与 mongo-plus.yaml 中的目标数据库保持一致。
   MaxPoolSize: 100 # 所有 Repository 共用一个 Client 的连接池。
   TimeoutSeconds: 10 # 初始化连接及数据库操作超时，范围 1～3600 秒。
+  Log:
+    level: silent # info 全部命令，warn 慢命令和错误，error 仅错误，silent 关闭。
+    slowThresholdMs: 200 # 慢命令阈值，0 使用 200ms。
+    colorful: false # 交互式控制台可开启颜色；日志含命令参数和业务 file:line。
 
 # 日志级别和格式；LogRotation.Enabled=true 时统一由下方文件日志管理器输出。
 Log:
