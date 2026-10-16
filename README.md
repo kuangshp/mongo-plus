@@ -185,6 +185,8 @@ pluralize 就是“是否在集合名后面带 s”的全局配置：`false` 或
 
 `//go:build ignore` 保证 generator.go 不参与服务正常构建。YAML 中路径相对该配置文件所在目录。Package、ModelPkgPath、OutPath、RepoPath、DtoPath、VoPath 与 gorm-plus 对应字段含义一致。Go 代码仍可直接构造 GeneratorConfig，MongoDB 同样是可选字段。
 
+### 全局主键默认规则
+
 所有实体继承全局 ID、SoftDelete、Timestamps，不用逐个重复配置。未配置 ID 时默认 objectId + auto；SoftDelete、Timestamps 默认 true，可通过 Bool(false) 关闭。
 
 主键通常只配置 Type，Generation 会自动关联：
@@ -219,8 +221,15 @@ YAML/JSON 对应填写 `type: int64`、`generation: manual`。Go 配置可用常
 
 YAML/JSON 仍使用字符串，不写 Go 常量名称。auto 仅用于 ObjectID，increment 仅用于 int64，manual 支持三种主键类型；非法值和不支持的组合会在生成或创建 Repository 时返回错误。
 
+## 2. JSON 实体定义
 
-`schema/user.json`：
+`generator.go` 配置生成目录、连接和全局默认值；`schema/*.json` 单独描述每个集合的业务字段、索引及实体级覆盖规则。一个 JSON 文件对应一个实体和集合，文件放在生成配置的 `SchemaDir` 目录下；当前只读取该目录直接包含的 `.json` 文件，不递归读取子目录。
+
+JSON 定义由 `go run generator.go` 读取。配置了 MongoDB 数据源时，先同步集合、校验器和索引，再生成 Entity、DAO、Repository 及可选 DTO/VO；未配置数据源时只生成代码。`mongoplus goctl api go ...` 只生成 HTTP 代码，不会执行这份实体定义。
+
+### 基本示例
+
+在业务项目中创建 `schema/user.json`：
 
 ```json
 {
@@ -242,6 +251,49 @@ YAML/JSON 仍使用字符串，不写 Go 常量名称。auto 仅用于 ObjectID�
 }
 ```
 
+### 全部可配置属性
+
+下表列出 JSON 实体定义支持的全部属性，路径中的 `[]` 表示数组元素。`fields[].fields` 中的子字段沿用同一套字段属性，可以继续嵌套。生成目录和数据库连接属于上一节的全局配置，不写在实体 JSON 中。
+
+| 属性路径 | JSON 类型 | 必填 / 默认行为 | 说明与示例 |
+| --- | --- | --- | --- |
+| `entity` | string | 可选；按文件名推导 | 生成的 Go 实体名，必须是合法的导出标识符。例如 `"AccountEntity"`；只影响 Go 类型名，不影响集合名。 |
+| `collection` | string | 可选；按文件名及全局 `pluralize` 推导 | 实际集合名，例如 `"custom_users"`。显式填写后不再转换下划线或追加 `s`。 |
+| `comment` | string | 可选；默认空字符串 | 实体说明，例如 `"用户"`，用于生成代码注释。 |
+| `id` | object | 可选；继承全局 `id` | 当前实体的主键配置；只填写需要覆盖的属性，例如 `{"type":"objectId"}`。 |
+| `id.type` | string | 可选；继承全局类型 | 支持 `objectId`、`int64`、`string`；全局也省略时默认 `objectId`。 |
+| `id.generation` | string | 可选；继承或按类型推导 | 支持 `auto`、`increment`、`manual`。覆盖为不同主键类型时重新推导生成方式：ObjectID 为 `auto`、int64 为 `increment`、string 为 `manual`。 |
+| `id.blockSize` | integer | 可选；继承全局设置 | 自增号码预分配数量，范围 `0`～`1000000`，仅用于 int64 + increment。`0` 不覆盖继承值；`1` 显式关闭继承的预分配。 |
+| `softDelete` | boolean | 可选；继承全局，未配置全局时为 `true` | 是否启用逻辑删除；`false` 明确关闭，`null` 与省略一样继承全局设置。 |
+| `timestamps` | boolean | 可选；继承全局，未配置全局时为 `true` | 是否自动维护 `created_at`、`updated_at`；`false` 明确关闭，`null` 与省略一样继承全局设置。 |
+| `tenant` | object | 可选；继承全局 `tenant` | 当前实体的租户字段配置。显式配置时需同时提供 `name`、`type`；省略或 `null` 不会关闭全局租户配置。 |
+| `tenant.name` | string | 配置 `tenant` 时必填 | 租户 BSON 字段名，例如 `"company_id"`；生成器自动补充该字段，不在业务 `fields` 中重复定义。 |
+| `tenant.type` | string | 配置 `tenant` 时必填 | 支持 `int64`、`string`、`objectId`；创建和查询时从请求 Context 读取租户值。 |
+| `fields` | array of object | 可选；省略时不定义额外业务字段 | 业务字段列表。主键及已启用的时间、逻辑删除和租户字段由生成器补充。 |
+| `fields[].name` | string | 每个字段必填 | BSON 字段名，例如 `"username"`；必须为合法且不重复的名称，不使用点路径声明嵌套对象。 |
+| `fields[].type` | string | 每个字段必填 | 支持 `string`、`int32`、`int64`、`bool`、`float64`、`objectId`、`datetime`、`decimal128`、`bytes`、`json`、`object`，以及加 `[]` 前缀的数组类型，如 `[]string`、`[]object`。 |
+| `fields[].comment` | string | 可选；默认空字符串 | 字段说明，例如 `"用户名"`，用于生成代码注释与数据库校验器的字段描述。 |
+| `fields[].goName` | string | 可选；从 `name` 推导 | 自定义 Go 字段名，例如 `"DisplayName"`；必须是合法且不冲突的导出标识符，不改变 BSON/JSON 字段名。 |
+| `fields[].required` | boolean | 可选；默认 `false` | 数据库校验器要求字段存在；不等价于字符串非空，也不排除数字 `0` 或 `false`。生成的 DTO 校验是另一层规则。 |
+| `fields[].unique` | boolean | 可选；默认 `false` | 为字段创建集合级唯一索引，索引名为 `uk_` 加字段路径并将点替换成下划线，例如 `uk_username`。逻辑删除后仍占用唯一值。 |
+| `fields[].nullable` | boolean | 可选；默认 `false` | 允许字段值为 BSON null，并生成指针字段；数组字段设置后允许整个数组为 null，不表示数组元素可以为 null。 |
+| `fields[].fields` | array of object | `object` / `[]object` 必填且非空 | 对象内部字段，例如 `[{"name":"city","type":"string"}]`。子字段递归使用本表中的字段属性；其他类型不能填写非空的 `fields`。 |
+| `indexes` | array of object | 可选；默认无额外索引 | 显式索引列表，用于复合、唯一、稀疏、逻辑删除条件和 TTL 索引。字段 `unique` 简写产生的索引会合并到该列表。 |
+| `indexes[].name` | string | 每个索引必填 | 索引名称，例如 `"idx_status_created_at"`；不能重复，也不能使用 MongoDB 保留的 `_id_`。 |
+| `indexes[].fields` | array of object | 每个索引必填且非空 | 有序的索引字段列表。复合索引顺序有意义，不能改写为无序对象。 |
+| `indexes[].fields[].name` | string | 每个索引字段必填 | 已定义字段的 BSON 路径，例如 `"status"`、`"address.city"`；也可以引用已启用的 `_id`、时间、逻辑删除和租户字段。 |
+| `indexes[].fields[].order` | integer | 每个索引字段必填 | `1` 为升序，`-1` 为降序；省略会得到无效的 `0`，不能自动补成升序。 |
+| `indexes[].unique` | boolean | 可选；默认 `false` | 是否为唯一索引；和多个索引字段组合时表示复合唯一约束。 |
+| `indexes[].sparse` | boolean | 可选；默认 `false` | 是否创建 MongoDB 稀疏索引；不能与 `activeOnly: true` 同时使用。 |
+| `indexes[].activeOnly` | boolean | 可选；默认 `false` | 仅索引未逻辑删除的文档；要求当前实体启用逻辑删除，可用于未删除记录的唯一约束。 |
+| `indexes[].expireAfterSeconds` | integer | 可选；省略时不是 TTL 索引 | TTL 过期秒数，范围 `0`～`2147483647`。仅支持一个 `datetime` 索引字段；`0` 表示按字段存储的时间点过期，TTL 执行物理删除。 |
+
+属性名按表中的 JSON 写法填写。未知属性、重复 JSON 键、重复字段以及与自动字段冲突的定义会报错。以上是本库的实体定义格式，不是直接传给 MongoDB 的原生 `$jsonSchema`；不要添加未支持的 `default`、`minLength` 等属性。
+
+字段的 Go 类型、嵌套对象及索引示例见[索引、类型和嵌套对象](#7-索引类型和嵌套对象)。
+
+### 实体与集合命名
+
 集合名自动从 JSON 文件名推导，不需要每个实体重复配置：
 
 | 文件名 | Go Entity | 默认集合名 | Pluralize: true |
@@ -254,7 +306,9 @@ YAML/JSON 仍使用字符串，不写 Go 常量名称。auto 仅用于 ObjectID�
 
 主键、时间和逻辑删除字段由工具补充，JSON 的 `fields` 不重复定义它们。
 
-单个实体覆盖全局设置：
+### 覆盖全局配置
+
+单个实体只需填写需要覆盖的配置，例如 `schema/event.json`：
 
 ```json
 {
@@ -267,7 +321,9 @@ YAML/JSON 仍使用字符串，不写 Go 常量名称。auto 仅用于 ObjectID�
 }
 ```
 
-只覆盖 `id.type` 时，生成方式按新类型补全；仅覆盖 `id.generation` 时保留全局类型。`false` 是明确关闭，不会被全局的 `true` 覆盖。
+只覆盖 `id.type` 为不同类型时，生成方式按新类型补全；仅覆盖 `id.generation` 时保留全局类型。`false` 是明确关闭，不会被全局的 `true` 覆盖。
+
+### 主键生成与号码预分配
 
 | 主键类型 | 生成方式 | Go 类型与行为 |
 | --- | --- | --- |
@@ -293,7 +349,7 @@ ID: mongoplus.IDConfig{
 YAML/JSON 对应 `blockSize: 100`。范围为 0～1000000，仅用于 int64 自增；0/1 表示按需申请，单个实体可用 1 关闭继承的预分配。不同类型/生成方式的实体覆盖会清除继承的区间设置。预分配保证号码唯一，不保证多实例之间按请求或提交顺序递增；重启、回滚和切换包装器可能跳过未用号码。需要严格按分配请求逐次递增时保持默认配置。
 
 
-## 2. 生成代码与同步数据库
+## 3. 生成代码与同步数据库
 
 MongoDB 中的“表”称为集合。[MongoDB 支持首次写入时自动创建集合](https://www.mongodb.com/docs/manual/core/databases-and-collections/)。不配置生成器数据源时，生成的 Repository 会在业务服务中使用运行时连接写入，并由 MongoDB 创建集合；首次插入不会自动根据本库 JSON 建立唯一索引或字段校验器。
 
@@ -450,7 +506,7 @@ schema-apply:
 	mongoplus schema apply --config mongo-plus.yaml
 ```
 
-## 3. 创建与复用 Repository
+## 4. 创建与复用 Repository
 
 ```go
 import (
@@ -493,7 +549,7 @@ users, err := userRepository.FindByIdList(ctx, []int64{1, 2, 3})
 
 `CreateBatch` 使用有序 InsertMany，每块最多 1000 条；自增主键每块只申请一次号码区间。每块先检查实体和自动字段，再交给原生驱动编码，成功后回填实体。非事务下失败时，前面的文档可能已写入，只回填已确认成功的前缀，后续文档不再插入；错误链保留驱动错误，唯一索引冲突仍可用 mongo.IsDuplicateKeyError 判断。网络中断或写确认失败时，当前块的写入结果可能不确定，不回填该块；应按业务幂等键核对结果。需要整批回滚时使用 Transaction。w=0 未确认写入返回 ErrUnacknowledgedWrite。
 
-## 4. 条件构造与分页
+## 5. 条件构造与分页
 
 ```go
 list, total, err := userRepository.FindPageByWrapper(
@@ -545,7 +601,7 @@ if page.HasMore {
 
 该游标固定按 `_id` 升序，支持常规过滤，但不接受自定义排序、投影或 Offset；不额外计算总数。ObjectID 顺序不是严格的业务创建时间顺序。大批量导出可以使用 `Walk(ctx, callback, options...)` 流式处理。
 
-## 5. 零值更新与逻辑删除
+## 6. 零值更新与逻辑删除
 
 ```go
 result, err := userRepository.UpdateById(ctx, id,
@@ -589,7 +645,7 @@ user, err := userRepository.FindById(ctx, id,
 
 `DeleteByIdList` 的空列表返回 `(0, nil)`，任一无效主键会在写入前报错。`DeleteByCondition(ctx, conditions...)` 将条件按 AND 合并并遵循逻辑删除配置；物理删除选项适用于 `DeleteById`、`DeleteByIdList` 和 `DeleteByWrapper`，也可以直接传 `mongoplus.WithPhysicalDelete()`。物理删除仍受租户约束，且可命中已软删除记录。所有 Wrapper 回调均允许 nil；无条件写入仍会被拦截。`CountByWrapper` 和 `ExistsByWrapper` 与 gorm-plus 一样接受额外的 `QueryOption`。
 
-## 6. 索引、类型和嵌套对象
+## 7. 索引、类型和嵌套对象
 
 | schema 类型 | Go 类型 |
 | --- | --- |
@@ -642,7 +698,7 @@ user, err := userRepository.FindById(ctx, id,
 
 复合索引的 fields 是有序数组，顺序会影响查询能力。还支持 sparse 和单个 datetime 字段的 expireAfterSeconds。TTL 是物理清理机制，与逻辑删除不同。
 
-## 7. 租户、操作人、数据权限与事务
+## 8. 租户、操作人、数据权限与事务
 
 集合只需要一个租户字段时，写在生成配置里即可，不必再注册插件：
 
@@ -736,7 +792,7 @@ err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
 
 所有操作必须传 txCtx 并使用同一 Client。事务需要副本集或分片集群，不支持 standalone。驱动可能重试回调，回调中不要发送短信、调用支付等不可重复外部操作；不要并行执行同一 Session 中的操作。支持 TransactionAs 构建项目自己的仓储集合。事务的读关注和写关注使用官方 `options.Transaction()`。没有 SQL savepoint，也没有跨 MongoDB 与 MySQL 的原子事务。
 
-## 8. 可选本机缓存、SingleFlight 与监控
+## 9. 可选本机缓存、SingleFlight 与监控
 
 ```go
 user, err := userRepository.FindById(ctx, id,
@@ -846,7 +902,7 @@ err := mongoplus.RegisterSlowQuery(db, mongoplus.SlowQueryConfig{
 })
 ```
 
-## 9. 手写 Entity 路线
+## 10. 手写 Entity 路线
 
 已有 Model 时无需再维护 JSON，复用同一份 mongo-plus.yml，通过 GeneratorModel 注册模型：
 
@@ -877,7 +933,7 @@ func main() {
 
 手写 Entity 自动推导的集合名同样遵循转下划线加 Pluralize 的规则；GeneratorModel.Collection 可完整覆盖。需要只同步不生成时，可以单独调用 SyncModels；需要预览变更时，可通过 schema.FromModels 与 schema.Plan 取得计划。
 
-## 10. 关联查询：Lookup、LeftJoin、InnerJoin
+## 11. 关联查询：Lookup、LeftJoin、InnerJoin
 
 常见关联查询无需手写 `$lookup` 管道。从生成的 Repository 开始，使用 `WithContext(ctx)`、Join、Where 到 Scan 的完整链式调用：
 
@@ -1017,7 +1073,7 @@ err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
 
 接口习惯与 gorm-plus 接近，底层使用 BSON 过滤和 MongoDB 聚合。已有 GORM 条件不能直接传入。本版不提供 SQL、FOR UPDATE 或 GORM 插件兼容层。数据层生成器不自动暴露 HTTP 接口；可选 go-zero 模板根据独立的 .api 文件生成 HTTP 层和 Swagger，见下方说明。
 
-## 11. 聚合统计：分组、金额计算与数组统计
+## 12. 聚合统计：分组、金额计算与数组统计
 
 聚合沿用同一条 Repository 调用链，无需为常见统计手写 `$group` 管道。示例的订单 Entity/DAO/Repository 来自 [order.json](examples/schema/order.json)，金额字段定义为 `decimal128`。
 
@@ -1172,7 +1228,7 @@ err := userRepository.WithContext(ctx).
 
 当前链式封装覆盖上表常用统计，不代表所有 MongoDB 运算符均已封装。日期表达式、条件计算、Bucket、窗口函数等可在自定义仓储中使用原生聚合；原有 `mongoplus.Aggregate[VO](ctx, r.Repository, pipeline)` 支持白名单内的单集合只读管道。涉及额外集合或写入的原生阶段需通过 Native 显式处理权限、事务与数据生命周期。
 
-## 12. go-zero 模板与中文参数校验
+## 13. go-zero 模板与中文参数校验
 
 与 gorm-plus 一样，通过 CLI 调用内嵌模板。数据模型与接口协议分开维护：
 
@@ -1245,7 +1301,7 @@ build: swagger
 
 已有服务重新生成时不会自动覆盖所有旧入口和 Handler，应先对照新版模板合并所需功能，保留业务代码。
 
-## 13. 敏感字段、主从数据源与查询文件
+## 14. 敏感字段、主从数据源与查询文件
 
 ### 敏感字段
 

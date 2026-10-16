@@ -77,7 +77,7 @@ list, total, err := userRepository.FindPageByWrapper(
 - `OrderTriState` 的 1/asc 为升序、2/desc 为降序，其他值跳过；`OrderIf` 支持真假分支，`OrderDefault` 在没有显式排序时提供默认值，行为与 gorm-plus GenWrapper 一致。
 - Wrapper、Select、Order 都使用完整 DAO 字段名。`WhereRaw` 接收可信业务代码构造的 `bson.D`，原生 SQL 需改写为 BSON。
 
-分页会补充 `_id` 作为稳定排序键；列表和总数默认执行两次查询。联表/自定义 VO 查询改用 `repository.WithContext(ctx).LeftJoin(...).Select(...).ScanByPage(&rows, page, size)`，或泛型 `mongoplus.ScanByPage[VO](ctx, query, page, size)`。具体例子见 [关联查询](../README.md#10-关联查询lookupleftjoininnerjoin)。
+分页会补充 `_id` 作为稳定排序键；列表和总数默认执行两次查询。联表/自定义 VO 查询改用 `repository.WithContext(ctx).LeftJoin(...).Select(...).ScanByPage(&rows, page, size)`，或泛型 `mongoplus.ScanByPage[VO](ctx, query, page, size)`。具体例子见 [关联查询](../README.md#11-关联查询lookupleftjoininnerjoin)。
 
 ## 更新与删除
 
