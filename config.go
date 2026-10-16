@@ -149,6 +149,7 @@ var defaultDatabase atomic.Pointer[Database]
 
 // Use 注册进程内默认数据库。之后生成的 NewXRepository() 可以不传连接，用法对应 gorm-plus 注册数据源后直接构造仓储。
 // 传入 nil 会清除默认连接。显式 NewXRepository(db) 仍优先使用参数中的连接。
+// 建议仅在启动时注册一次；已构造的 Repository 保持自己的连接，不随默认连接变化。
 func Use(db *Database) {
 	if db == nil {
 		defaultDatabase.Store(nil)
@@ -159,6 +160,29 @@ func Use(db *Database) {
 
 // DefaultDB 返回 Use 注册的数据库；尚未注册时为 nil。
 func DefaultDB() *Database { return defaultDatabase.Load() }
+
+// ResolveDatabase 为仓储构造函数选择数据库，不创建连接，也不修改默认连接。
+// 无参数时读取 Use 注册的默认数据库；传一个参数时只使用该句柄。
+// 显式 nil、未初始化的数据库及多个参数均返回错误，不能悄悄回退到默认库或忽略参数。
+// 返回后由仓储持有该句柄；之后调用 Use 不影响已构造的仓储。
+func ResolveDatabase(databases ...*Database) (*Database, error) {
+	var db *Database
+	switch len(databases) {
+	case 0:
+		db = DefaultDB()
+		if db == nil || db.native == nil {
+			return nil, fmt.Errorf("未配置有效的默认数据库，请先调用 mongoplus.Use(db) 或显式传入数据库句柄")
+		}
+	case 1:
+		db = databases[0]
+		if db == nil || db.native == nil {
+			return nil, fmt.Errorf("显式数据库句柄不能为空或未初始化；省略参数才能使用默认数据库")
+		}
+	default:
+		return nil, fmt.Errorf("仓储构造最多接受一个数据库句柄，实际传入 %d 个", len(databases))
+	}
+	return db, nil
+}
 
 // Native 返回原生数据库，供明确需要官方 API 的仓储扩展使用。
 func (d *Database) Native() *mongo.Database { return d.native }

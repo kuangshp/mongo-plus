@@ -2,6 +2,10 @@
 
 本表描述当前封装的行为。没有封装的官方能力通过业务仓储中的 DALNative/Native 扩展；扩展调用需要业务明确维护权限、事务 Context、敏感字段及缓存失效。
 
+## 仓储数据库选择
+
+生成的 `NewXRepository()` 在构造时绑定默认连接；`NewXRepository(db)` 绑定传入的原始句柄，并且不要求或修改默认连接。之后变更默认连接不影响已有仓储。无效默认连接、显式 nil、未初始化句柄及多个句柄均在初始化时报错，不会静默回退或只取第一个参数。详见[默认连接与多个数据库](../README.md#默认连接与多个数据库)。
+
 ## 查询选项
 
 | 入口 | 排序 / 投影 | Offset / Limit | Collation / Hint / Comment | Let | BatchSize / AllowDiskUse | Cache / SingleFlight |

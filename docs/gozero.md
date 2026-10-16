@@ -120,6 +120,20 @@ MongoConfig:
 
 已有服务的 ServiceContext 不会被 goctl 增量生成覆盖；升级工具后，需要在原 `mongoplus.Connect` 成功且错误检查通过后手动合并一次 `mongoplus.Use(db)`。默认连接是进程级配置，多个服务初始化时以后一次成功注册为准；多数据源需要固定连接时，继续使用 `repository.NewXRepository(db)` 显式指定。
 
+多个数据库只选择其中一个作为默认，其他句柄保存在 ServiceContext 中并显式传入：
+
+```go
+// 在启动入口初始化句柄后调用一次。
+mongoplus.Use(mainDB)
+
+// Logic 或 ServiceContext 中分别构造所需仓储。
+users := repository.NewUserRepository()                    // 主业务库。
+archiveUsers := repository.NewUserRepository(archiveDB)    // 归档库。
+reportUsers := repository.NewUserRepository(reportDB)      // 报表库。
+```
+
+显式句柄不修改默认连接；仓储构造后不会随默认连接变化。传入 nil 或多个句柄会初始化失败，不会静默使用默认库或忽略多余参数。只需读取同一个 ServiceContext 中对应的句柄，不应在请求中调用 Use 切换数据库。完整构造契约与旧扩展文件升级方式见[默认连接与多个数据库](../README.md#默认连接与多个数据库)。
+
 需要同步 schema 时，运行时配置与可选 `mongo-plus.yaml` 中的数据库配置应指向相同的目标环境；URI 从业务配置读取，不写进 Entity、Repository 或 Logic。
 
 在生成的 ServiceContext 中添加业务需要的 Repository 字段和构造赋值，例如：

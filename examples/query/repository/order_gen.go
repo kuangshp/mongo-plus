@@ -194,13 +194,13 @@ func (r *defaultOrderRepository) Native() *mongo.Collection {
 	return r.Repository.Native()
 }
 
-// newDefaultOrderRepository 使用默认连接或显式连接，以及生成时解析的集合配置。
+// newDefaultOrderRepository 在构造时固定数据库，再应用生成时解析的集合配置。
 // 这里只创建仓储包装器，复用已有 Client，不新建连接，也不自动同步集合结构。
 func newDefaultOrderRepository(db ...*mongoplus.Database) *defaultOrderRepository {
-	// go-zero 启动模板已注册默认连接；显式传参时优先使用指定数据库。
-	database := mongoplus.DefaultDB()
-	if len(db) > 0 {
-		database = db[0]
+	// 无参走默认连接；显式句柄优先且不改变默认连接。配置错误在初始化时暴露。
+	database, err := mongoplus.ResolveDatabase(db...)
+	if err != nil {
+		panic(err)
 	}
 	return &defaultOrderRepository{
 		Repository: mongoplus.MustRepository[model.OrderEntity, int64](database, mongoplus.CollectionConfig{

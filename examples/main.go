@@ -35,7 +35,10 @@ func main() {
 		defer cancel()
 		_ = db.Close(closeCtx)
 	}()
-	userRepository := repository.NewUserRepository(db)
+	// 启动时注册一次默认连接，无参仓储固定使用该句柄。
+	mongoplus.Use(db)
+	userRepository := repository.NewUserRepository()
+	// 显式传参优先；其他数据库也可传入各自句柄，不改变上面的默认连接。
 	departmentRepository := repository.NewDepartmentRepository(db)
 	department := &model.DepartmentEntity{Name: "研发部"}
 	if err = departmentRepository.Create(ctx, department); err != nil {

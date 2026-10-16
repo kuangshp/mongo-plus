@@ -550,6 +550,33 @@ go-zero 模板已在 `NewServiceContext` 中于连接成功后自动调用 `mong
 
 数据库包装器和 Repository 在启动时创建并注入业务层，不要每个请求新建 Client。已有官方驱动数据库可用 `mongoplus.NewDatabase(nativeDB)` 包装；创建文档直接使用该 Client 的 BSONOptions/Registry，兼容 UseJSONStructTags 和自定义字段编码器，无需重复配置。自动管理字段（ID、租户、时间、逻辑删除、审计）应使用明确的 bson 标签。关闭连接由拥有该 Client 的启动入口负责。
 
+### 默认连接与多个数据库
+
+每个 Repository 在构造时绑定一个数据库。不传参数时使用 `mongoplus.Use` 注册的默认连接；传一个 `*mongoplus.Database` 时固定使用该句柄，不读取或修改默认连接。三个数据库可以同时构造同一种仓储：
+
+```go
+// mainDB、archiveDB、reportDB 是启动时已初始化的数据库句柄。
+// 只将主业务库设为默认，另外两个数据库不需要调用 Use。
+mongoplus.Use(mainDB)
+
+mainUsers := repository.NewUserRepository()            // 默认主业务库。
+archiveUsers := repository.NewUserRepository(archiveDB) // 显式归档库。
+reportUsers := repository.NewUserRepository(reportDB)   // 显式报表库。
+```
+
+| 构造方式 | 行为 |
+| --- | --- |
+| `NewUserRepository()` | 在构造时取得默认句柄；未注册有效连接则初始化失败 |
+| `NewUserRepository(db)` | 只使用传入的句柄；不要求存在默认连接 |
+| `NewUserRepository(nil)` | 初始化失败；显式 nil 不会兜底到默认库 |
+| `NewUserRepository(db1, db2)` | 初始化失败；一个仓储只绑定一个句柄 |
+
+`Use` 建议仅在启动时设置一次。之后修改或清除默认连接，只影响后续无参构造，不影响已创建的 `mainUsers`、`archiveUsers` 和 `reportUsers`。构造仓储不会创建 Client 或自动同步 schema，各数据源的集合结构应单独同步。
+
+生成仓储使用公共 `ResolveDatabase(db...)` 统一解析参数，该函数返回原始句柄或错误；生成构造函数沿用启动时 panic 暴露无效配置的约定。手写仓储也可调用该函数并自行返回错误。
+
+旧业务项目升级后重新运行 `go run generator.go` 更新 `_gen.go`。业务扩展文件不会被覆盖：若其构造函数仍要求必传句柄，需要手动将签名改为 `func NewUserRepository(db ...*mongoplus.Database) UserRepository`，并向基础构造函数转发 `newDefaultUserRepository(db...)`。已经使用可变参数的文件无需修改。
+
 Gin 和 go-zero 都只需传入请求的 `context.Context`，没有框架绑定。框架的参数校验仍由业务项目负责；MongoDB 校验规则需通过配置了数据源的 Generate、SyncSchema 或 schema apply 建立。
 
 Gin 项目如果沿用 gorm-plus 中直接传 `*gin.Context` 的写法，可在启动时通过 `RegisterCtxResolver` 将它解析为 `c.Request.Context()`，注册示例见[迁移指南](docs/gorm-plus-migration.md#gin-context)。

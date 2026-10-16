@@ -116,6 +116,50 @@ func TestDefaultConnectionAndOverride(t *testing.T) {
     if _,err:=bound.Count(context.Background()); !errors.Is(err,mongoplus.ErrUnmanagedTransaction) { t.Fatalf("无效绑定静默回退: %%v",err) }
 }
 
+// 验证生成的公开构造函数，而不只是公共解析函数；同名集合可分别绑定三个数据库。
+func TestRepositoryDatabaseSelection(t *testing.T) {
+    client,err:=mongo.Connect(options.Client().ApplyURI("mongodb://127.0.0.1:1"))
+    if err!=nil { t.Fatal(err) }
+    defer client.Disconnect(context.Background())
+    previous:=mongoplus.DefaultDB()
+    defer mongoplus.Use(previous)
+    mainDB:=mongoplus.NewDatabase(client.Database("main"))
+    archiveDB:=mongoplus.NewDatabase(client.Database("archive"))
+    reportDB:=mongoplus.NewDatabase(client.Database("report"))
+    mongoplus.Use(mainDB)
+    mainUsers:=NewUserRepository()
+    archiveUsers:=NewUserRepository(archiveDB)
+    reportUsers:=NewUserRepository(reportDB)
+    check:=func(repo UserRepository, db *mongoplus.Database) {
+        t.Helper()
+        if repo.Native().Database()!=db.Native() { t.Fatal("仓储没有绑定指定的数据库句柄") }
+    }
+    check(mainUsers,mainDB)
+    check(archiveUsers,archiveDB)
+    check(reportUsers,reportDB)
+    if mongoplus.DefaultDB()!=mainDB {t.Fatal("显式构造修改了默认数据库")}
+    mongoplus.Use(reportDB)
+    check(mainUsers,mainDB)
+    check(archiveUsers,archiveDB)
+    check(reportUsers,reportDB)
+    check(NewUserRepository(),reportDB)
+    mongoplus.Use(nil)
+    check(NewUserRepository(archiveDB),archiveDB)
+    check(mainUsers,mainDB)
+    mustPanic:=func(name string, makeRepo func()) {
+        t.Helper()
+        t.Run(name,func(t *testing.T) {
+            defer func(){if recover()==nil {t.Fatal("无效构造未在初始化时报错")}}()
+            makeRepo()
+        })
+    }
+    mustPanic("missing default",func(){NewUserRepository()})
+    mongoplus.Use(mainDB)
+    mustPanic("explicit nil",func(){NewUserRepository(nil)})
+    mustPanic("uninitialized",func(){NewUserRepository(&mongoplus.Database{})})
+    mustPanic("multiple handles",func(){NewUserRepository(mainDB,archiveDB)})
+}
+
 func TestGeneratedTransactionBinding(t *testing.T) {
     uri:=os.Getenv("MONGOPLUS_TEST_URI")
     if uri=="" { t.Skip("需要临时 MongoDB 副本集") }

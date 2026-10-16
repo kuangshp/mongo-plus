@@ -16,7 +16,8 @@ type {{.Name}}Repository interface {
 var _ {{.Name}}Repository = (*customer{{.Name}}Repository)(nil)
 
 // New{{.Name}}Repository 创建仓储。
-// 不传连接时使用 mongoplus.Use 注册的默认数据库；传入连接时优先使用参数。
+// 无参时使用 mongoplus.Use 注册的默认数据库；传一个句柄时固定使用该数据库。
+// 显式 nil 或多个句柄会初始化失败；构造后不受默认数据库切换影响。
 func New{{.Name}}Repository(db ...*mongoplus.Database) {{.Name}}Repository {
 	return &customer{{.Name}}Repository{
 		default{{.Name}}Repository: newDefault{{.Name}}Repository(db...),
