@@ -143,8 +143,8 @@ func LoadConfig(path string) (Config, error) {
 func (c Config) HasMongoDB() bool {
 	m := c.MongoDB
 	return m.URI != "" || m.Database != "" || m.MaxPoolSize != 0 || m.Timeout != 0 ||
-		m.Log.Level != "" || m.Log.SlowThresholdMS != 0 || m.Log.Colorful || m.Log.Writer != nil ||
-		m.Log.HideParameters || len(m.Log.SensitiveFields) > 0 || m.Log.MaxLength != 0 || m.Log.IncludeErrorDetails
+		m.Log.Level != "" || m.Log.Format != "" || m.Log.SlowThresholdMS != 0 || m.Log.Colorful || m.Log.Writer != nil ||
+		m.Log.Replayable || m.Log.HideParameters || len(m.Log.SensitiveFields) > 0 || m.Log.MaxLength != 0 || m.Log.IncludeErrorDetails
 }
 
 // Normalize 补全路径和全局默认；逻辑删除、时间字段默认开启。

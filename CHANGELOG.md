@@ -2,6 +2,10 @@
 
 ## v0.0.2
 
+- 增加显式 Replayable 日志模式，输出可复制到 mongosh 执行的真实语句与 BSON 类型；超长语句整条省略，依赖原 Session/游标的命令明确标注；增加真实 mongosh 执行及字段类型回归，并纳入 CI。
+
+- 命令日志默认改为多行 mongosh 风格，常见操作显示 insertOne/find/updateOne/deleteOne 等方法；移除协议噪声，保留日期、ObjectID、大整数精度、数据库标记、调用位置和脱敏，format=json 可保留单行 Extended JSON。
+
 - 仓储构造统一使用 ResolveDatabase：无参绑定默认连接，单个显式句柄独立绑定；无效句柄和多参数初始化时报错，补充三个数据库的绑定回归、多数据源示例与旧业务扩展升级说明。
 
 - 系统性修复公共 SF 嵌套参数类型碰撞，升级 v2 键；区分在途结果类型，支持 nil 接口结果，覆盖精确/前缀失效及并发租户回归。

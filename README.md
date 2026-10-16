@@ -932,7 +932,7 @@ mongoplus.RegisterCache(cache)
 
 ### 控制台命令日志与调用位置
 
-通过连接配置开启类似 GORM 的日志，打印时间、业务调用处的 `文件路径:行号`、耗时、条数和实际 MongoDB 命令（Extended JSON）。终端或 IDE 支持识别路径时可点击跳转；生成的 `_gen.go` 和库内部调用会被跳过。
+通过连接配置开启类似 GORM 的日志，打印时间、业务调用处的 `文件路径:行号`、耗时、条数、实际数据库名和多行 mongosh 风格命令。终端或 IDE 支持识别路径时可点击跳转；生成的 `_gen.go` 和库内部调用会被跳过。
 
 ```go
 db, err := mongoplus.Connect(ctx, mongoplus.Config{
@@ -940,6 +940,7 @@ db, err := mongoplus.Connect(ctx, mongoplus.Config{
     Database: "shop",
     Log: mongoplus.LogConfig{
         Level:           mongoplus.LogInfo, // info 全部命令，warn 慢命令和错误，error 仅错误。
+        Format:          "shell",          // 默认 shell，多行显示；json 保留单行 Extended JSON。
         SlowThresholdMS: 200,               // 0 使用 200ms。
         Colorful:        true,              // 可选 ANSI 颜色；默认 false。
         HideParameters:  true,              // 生产建议开启，隐藏参数值；false 时常见敏感字段仍脱敏。
@@ -957,6 +958,7 @@ mongodb:
   database: shop
   log:
     level: info
+    format: shell
     slowThresholdMs: 200
     colorful: true
     hideParameters: true
@@ -965,12 +967,49 @@ mongodb:
     includeErrorDetails: false
 ```
 
-输出格式如下（实际命令还可能包含 Session 等驱动字段）：
+输出格式如下，`db` 对应上方 `[db:shop]` 标注的实际数据库：
 
 ```text
 2026/10/16 10:20:30 /work/shop/internal/service/user.go:77
-[2.135ms] [rows:1] shop.find {"find":"users","filter":{"name":"?"},"limit":"?"}
+[2.135ms] [rows:1] [parameters:redacted] [db:shop]
+db.users.find({
+  name: "?"
+}).limit("?")
 ```
+
+开发环境关闭 `HideParameters` 后，普通插入可显示为：
+
+```javascript
+db.users.insertOne({
+  name: "张三",
+  age: 28,
+  email: "[REDACTED]",
+  tags: ["dev", "mongodb"],
+  createdAt: ISODate("2026-10-16T12:39:30.123Z")
+})
+```
+
+日期显示实际 UTC 时间，不替换为执行日志时的 `new Date()`；ObjectID 显示为 `ObjectId("...")`，安全整数直接显示数值，超过 JavaScript 安全整数范围的 int64 保留 `NumberLong("...")`。默认隐藏 Session 等协议元数据，保留过滤、更新和业务选项。批量更新/删除及其他不能直接映射的命令使用多行 `db.runCommand({...})`，不丢弃各子操作的参数。特殊集合名使用 `db.getCollection("...")`。
+
+`Format: "json"` / `format: json` 可恢复单行协议展示；默认两种格式共用脱敏规则与长度限制。普通 shell 是诊断展示，已脱敏、隐藏或截断的日志不能直接重放，也不包含可重放事务所需的 Session 信息。
+
+需要复制到 mongosh 直接执行时，在受控开发环境显式开启可执行模式：
+
+```yaml
+MongoConfig:
+  Log:
+    level: info
+    format: shell
+    replayable: true
+    hideParameters: false
+    maxLength: 16384
+```
+
+手写 Go 配置对应 `LogConfig{Level: LogInfo, Format: "shell", Replayable: true}`。此模式使用真实参数（包括原本会脱敏的邮箱、密码等字段），不应用 `SensitiveFields`，不适用于生产日志。普通 shell 模式会标注 `[parameters:redacted]`，表示它是预览。
+
+可执行模式按实际集合生成 `db.user.insertOne({...});`、`updateOne`、`updateMany`、`deleteOne` 等语句；保留长整数 `NumberLong("28")`、双精度 `Double(1)`、日期 `ISODate("...")` 等 BSON 类型，避免复制后违反原有集合校验。游标和选项中的数值则按 mongosh API 要求显示为普通 number。超出长度限制时整条省略并提示，不输出残缺的可执行语句。执行前切换到 `[db:...]` 标注的数据库；复制命令正文即可，时间、耗时和路径为日志信息。
+
+getMore、提交/回滚事务依赖原有游标或 Session，不能独立重放，日志会明确标注；事务内单条 CRUD 复制后作为独立操作执行，不恢复原事务。真实 mongosh 重放回归会执行增删改查、聚合及复合操作，并通过官方驱动核对写入的值和 BSON 类型。
 
 默认 `level` 为空或 `silent` 时关闭日志；日志默认写入标准输出。可通过 Go 配置的 `Writer` 接入输出流，例如 `Writer: log.Writer()` 复用项目标准库日志的目标。go-zero 模板已包含 `MongoConfig.Log` 配置，生成服务后修改对应 YAML 即可；独立的命令日志不自动受服务顶层 `Log` 或 `LogRotation` 控制。
 
@@ -986,7 +1025,7 @@ if err != nil { return err }
 db := mongoplus.NewDatabase(client.Database("shop"))
 ```
 
-监控器覆盖 Client 的所有数据库及原生命令调用，需在连接创建前配置；已有自定义 `CommandMonitor` 时应组合回调，避免被 `SetMonitor` 替换。命中缓存时没有数据库命令，因此不输出命令日志；启用 SingleFlight 的查询仍保留发起者的业务位置。耗时是驱动单条命令的耗时，重试和游标 `getMore` 会分别打印。读命令的 `rows` 是本批返回数量，写命令取服务器返回的 `n`（更新时为匹配条数），未知时显示 `-`。命令参数会原样输出，按需开启。使用 `-trimpath` 构建时，运行时路径可能无法映射到本机源文件。
+监控器覆盖 Client 的所有数据库及原生命令调用，需在连接创建前配置；已有自定义 `CommandMonitor` 时应组合回调，避免被 `SetMonitor` 替换。命中缓存时没有数据库命令，因此不输出命令日志；启用 SingleFlight 的查询仍保留发起者的业务位置。耗时是驱动单条命令的耗时，重试和游标 `getMore` 会分别打印。读命令的 `rows` 是本批返回数量，写命令取服务器返回的 `n`（更新时为匹配条数），未知时显示 `-`。使用 `-trimpath` 构建时，运行时路径可能无法映射到本机源文件。
 
 ```go
 db.Observer = func(ctx context.Context, event mongoplus.Observation) {

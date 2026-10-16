@@ -36,13 +36,24 @@ func TestCommandLoggerConnectAndBusinessCaller(t *testing.T) {
 	if !strings.Contains(out.String(), ".insert") || !strings.Contains(out.String(), "[rows:1]") || !strings.Contains(out.String(), "logger integration") {
 		t.Fatalf("insert log: %s", &out)
 	}
+	for _, want := range []string{"db.events.insertOne({\n", "ObjectId(", "ISODate("} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("实际插入命令未转成 shell 格式，缺少 %q: %s", want, &out)
+		}
+	}
+	for _, noise := range []string{"lsid:", "txnNumber:", "$numberLong", "$date"} {
+		if strings.Contains(out.String(), noise) {
+			t.Fatalf("实际插入日志仍含协议噪声 %q: %s", noise, &out)
+		}
+	}
+	t.Logf("实际插入日志示例:\n%s", &out)
 	out.Reset()
 	_, file, line, _ := runtime.Caller(0)
 	got, err := r.FindList(ctx, mp.Query().Where(field.NewString("message").Eq("logger integration")).Build())
 	if err != nil || len(got) != 1 {
 		t.Fatalf("find: %v %v", got, err)
 	}
-	if !strings.Contains(out.String(), fmt.Sprintf("%s:%d\n", file, line+1)) || !strings.Contains(out.String(), `"filter"`) || !strings.Contains(out.String(), "[rows:1]") {
+	if !strings.Contains(out.String(), fmt.Sprintf("%s:%d\n", file, line+1)) || !strings.Contains(out.String(), "db.events.find({\n") || !strings.Contains(out.String(), "[rows:1]") {
 		t.Fatalf("business caller/command missing: %s", &out)
 	}
 	out.Reset()

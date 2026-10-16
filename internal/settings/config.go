@@ -108,9 +108,12 @@ const (
 )
 
 // LogConfig 配置驱动命令日志。info 输出全部，warn 输出慢命令和错误，error 仅输出错误。
-// 命令参数按字段脱敏，可进一步隐藏全部值；Writer 仅通过 Go 设置，默认输出到 os.Stdout。
+// 默认按字段脱敏，可进一步隐藏全部值；Replayable 明确保留真实值，仅供受控开发。
+// Writer 仅通过 Go 设置，默认输出到 os.Stdout。
 type LogConfig struct {
 	Level               LogLevel  `json:"level,optional" yaml:"level"`                             // 空值或 silent 关闭；info 输出全部命令。
+	Format              string    `json:"format,optional" yaml:"format"`                           // 空值或 shell：多行 mongosh 风格；json：单行 Extended JSON。
+	Replayable          bool      `json:"replayable,optional" yaml:"replayable"`                   // shell 调试模式：保留真实参数和 BSON 类型，供复制执行；包含敏感值，仅在受控开发环境启用。
 	SlowThresholdMS     int64     `json:"slowThresholdMs,optional" yaml:"slowThresholdMs"`         // 0 使用 200ms。
 	Colorful            bool      `json:"colorful,optional" yaml:"colorful"`                       // 是否输出 ANSI 颜色；日志文件通常保持 false。
 	Writer              io.Writer `json:"-" yaml:"-"`                                              // Go 中可指定输出流；nil 使用标准输出，无法通过 YAML 注入。

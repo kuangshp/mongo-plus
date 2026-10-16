@@ -19,6 +19,7 @@ jobs:
       MONGOPLUS_TEST_URI: mongodb://127.0.0.1:27017,127.0.0.1:27018,127.0.0.1:27019/?replicaSet=mongo-plus-test&retryWrites=true
       MONGOPLUS_GIN_INTEGRATION: '1'
       MONGOPLUS_GOCTL_INTEGRATION: '1'
+      MONGOPLUS_MONGOSH_CONTAINER: mongo-plus-27017
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

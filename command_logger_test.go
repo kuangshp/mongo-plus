@@ -49,7 +49,7 @@ func TestCommandLoggerLevelsAndWriteErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := context.Background()
-			monitor.Started(ctx, &event.CommandStartedEvent{CommandName: "update", DatabaseName: "shop", ConnectionID: "server", RequestID: 1, Command: logRaw(t, bson.M{"update": "users", "updates": bson.A{bson.M{"q": bson.M{"name": "alice"}}}})})
+			monitor.Started(ctx, &event.CommandStartedEvent{CommandName: "update", DatabaseName: "shop", ConnectionID: "server", RequestID: 1, Command: logRaw(t, bson.M{"update": "users", "updates": bson.A{bson.M{"q": bson.M{"name": "alice"}, "u": bson.M{"$set": bson.M{"status": 1}}}}})})
 			finish := event.CommandFinishedEvent{CommandName: "update", DatabaseName: "shop", ConnectionID: "server", RequestID: 1, Duration: tc.duration}
 			if tc.failure != nil {
 				monitor.Failed(ctx, &event.CommandFailedEvent{CommandFinishedEvent: finish, Failure: tc.failure})
@@ -61,7 +61,7 @@ func TestCommandLoggerLevelsAndWriteErrors(t *testing.T) {
 				if got != "" {
 					t.Fatalf("unexpected log: %s", got)
 				}
-			} else if !strings.Contains(got, tc.want) || !strings.Contains(got, tc.marker) || !strings.Contains(got, "shop.update") || !strings.Contains(got, "alice") {
+			} else if !strings.Contains(got, tc.want) || !strings.Contains(got, tc.marker) || !strings.Contains(got, "[db:shop]") || !strings.Contains(got, "db.users.updateOne(") || !strings.Contains(got, "alice") {
 				t.Fatalf("incomplete log: %s", got)
 			}
 		})
@@ -99,7 +99,7 @@ func TestCommandLoggerCallerAndConcurrentRequests(t *testing.T) {
 		t.Fatalf("lost concurrent commands: %d", got)
 	}
 	for i := 0; i < 50; i++ {
-		if strings.Count(out.String(), fmt.Sprintf(" db%d.find ", i)) != 1 {
+		if strings.Count(out.String(), fmt.Sprintf("[db:db%d]\n", i)) != 1 {
 			t.Fatalf("mismatched request %d: %s", i, out.String())
 		}
 	}
@@ -112,7 +112,7 @@ func TestCommandLoggerConfiguration(t *testing.T) {
 			t.Fatalf("default must be silent: %v %v", monitor, err)
 		}
 	}
-	for _, cfg := range []LogConfig{{Level: "debug"}, {SlowThresholdMS: -1}, {SlowThresholdMS: 1<<63 - 1}} {
+	for _, cfg := range []LogConfig{{Level: "debug"}, {Format: "unknown"}, {SlowThresholdMS: -1}, {SlowThresholdMS: 1<<63 - 1}} {
 		if _, err := NewCommandLogger(cfg); err == nil {
 			t.Fatalf("invalid config accepted: %+v", cfg)
 		}

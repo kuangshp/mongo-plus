@@ -93,7 +93,7 @@ func TestGeneratedCommandLogYAML(t *testing.T) {
  data=bytes.Replace(data,[]byte("level: silent"),[]byte("level: info"),1)
  var c config.Config
  if err:=conf.LoadFromYamlBytes(data,&c);err!=nil {t.Fatal(err)}
- if c.MongoConfig.Log.Level!=mp.LogInfo || c.MongoConfig.Log.SlowThresholdMS!=200 {t.Fatalf("command log YAML not loaded: %+v",c.MongoConfig.Log)}
+ if c.MongoConfig.Log.Level!=mp.LogInfo || c.MongoConfig.Log.Format!="shell" || c.MongoConfig.Log.SlowThresholdMS!=200 {t.Fatalf("command log YAML not loaded: %+v",c.MongoConfig.Log)}
 }
 func TestInvalidMongoTimeoutFailsBeforeConnecting(t *testing.T) {
  for _,timeout:=range []int64{-1,0,3601} {

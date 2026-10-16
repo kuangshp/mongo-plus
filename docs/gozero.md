@@ -118,6 +118,10 @@ MongoConfig:
 
 实际访问数据库时必须开启 MongoConfig.Enabled。启用后，NewServiceContext 在启动时创建一个 Client 并 Ping，连接成功后自动调用 `mongoplus.Use(db)` 注册进程默认数据库，所有生成的 `repository.NewXRepository()` 均可无参构造。连接失败则停止启动；超时必须在 1～3600 秒之间。关闭时 MongoDB 字段为 nil，不注册或清除已有默认连接，不应调用数据库业务接口。
 
+`MongoConfig.Log.format` 默认 `shell`，命令日志以多行 `db.users.insertOne({...})`、`db.users.find({...})` 等形式显示，保留数据库名和调用位置；设置 `json` 可切换回单行 Extended JSON。`hideParameters: true` 仍隐藏参数值，开发环境需要查看普通值时改为 false，敏感字段仍会脱敏。
+
+若需复制命令正文到 mongosh 按原值执行，开发配置同时设置 `replayable: true` 和 `hideParameters: false`。该模式输出真实敏感值并保留 BSON 类型，不受 SensitiveFields 脱敏约束，生产保持 `replayable: false`。普通脱敏模式会标注 `[parameters:redacted]`，超长可执行语句会整条省略，避免复制残缺文本。
+
 已有服务的 ServiceContext 不会被 goctl 增量生成覆盖；升级工具后，需要在原 `mongoplus.Connect` 成功且错误检查通过后手动合并一次 `mongoplus.Use(db)`。默认连接是进程级配置，多个服务初始化时以后一次成功注册为准；多数据源需要固定连接时，继续使用 `repository.NewXRepository(db)` 显式指定。
 
 多个数据库只选择其中一个作为默认，其他句柄保存在 ServiceContext 中并显式传入：

@@ -1,6 +1,7 @@
 package mongoplus
 
 import (
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -26,6 +27,19 @@ func sensitiveLogPath(path string, additional []string) bool {
 // safeCommand 只序列化脱敏后的副本；解析失败不回退到原始命令。
 // 控制递归深度及节点数，避免大文档在日志处理时无限展开。
 func safeCommand(raw bson.Raw, cfg LogConfig) string {
+	result, err := redactedCommand(raw, cfg)
+	if err != nil {
+		return "[command unavailable]"
+	}
+	encoded, err := bson.MarshalExtJSON(result, false, false)
+	if err != nil {
+		return "[command unavailable]"
+	}
+	return truncateCommand(singleLine(string(encoded)), cfg.MaxLength)
+}
+
+// 两种展示格式共用同一份脱敏结果；shell 格式不能绕过脱敏重新读取业务值。
+func redactedCommand(raw bson.Raw, cfg LogConfig) (bson.D, error) {
 	remaining := 2048
 	var walk func(bson.RawValue, string, int, bool) any
 	walk = func(value bson.RawValue, path string, depth int, expression bool) any {
@@ -85,7 +99,7 @@ func safeCommand(raw bson.Raw, cfg LogConfig) string {
 	}
 	elements, err := raw.Elements()
 	if err != nil {
-		return "[command unavailable]"
+		return nil, fmt.Errorf("命令 BSON 无法解析: %w", err)
 	}
 	result := bson.D{}
 	for _, e := range elements {
@@ -95,11 +109,7 @@ func safeCommand(raw bson.Raw, cfg LogConfig) string {
 		}
 		result = append(result, bson.E{Key: e.Key(), Value: walk(e.Value(), e.Key(), 0, false)})
 	}
-	encoded, err := bson.MarshalExtJSON(result, false, false)
-	if err != nil {
-		return "[command unavailable]"
-	}
-	return truncateCommand(singleLine(string(encoded)), cfg.MaxLength)
+	return result, nil
 }
 
 func expressionLogPath(path string) bool {

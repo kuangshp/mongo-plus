@@ -12,6 +12,8 @@ MongoConfig:
   TimeoutSeconds: 10 # 初始化连接及数据库操作超时，范围 1～3600 秒。
   Log:
     level: info # info 全部命令，warn 慢命令和错误，error 仅错误，silent 关闭。
+    format: shell # 多行 mongosh 风格；json 切换为单行 Extended JSON。
+    replayable: false # 开发环境复制执行时设 true 并关闭 hideParameters；会输出真实敏感值。
     slowThresholdMs: 200 # 慢命令阈值，0 使用 200ms。
     colorful: true # 交互式控制台可开启颜色；业务 file:line 可由 IDE 识别跳转。
     hideParameters: true # 默认隐藏参数值；本机排查可改为 false，常见敏感字段仍会脱敏。

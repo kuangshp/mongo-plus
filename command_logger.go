@@ -21,13 +21,19 @@ type commandLogKey struct {
 }
 
 type commandLogEntry struct {
-	caller, database, command string
+	caller, command string
 }
 
 // NewCommandLogger 创建官方驱动的命令监控器；通过 ClientOptions.SetMonitor 安装。
 // Connect 根据 Config.Log 自动安装。已创建的 Client 无法补装，需在连接前配置。
 // 同一个监控器可以供多个 Client 使用；默认关闭，不替换 Database.Observer。
 func NewCommandLogger(cfg LogConfig) (*event.CommandMonitor, error) {
+	if cfg.Format != "" && cfg.Format != "shell" && cfg.Format != "json" {
+		return nil, fmt.Errorf("不支持的命令日志格式 %q，可选 shell、json", cfg.Format)
+	}
+	if cfg.Replayable && (cfg.Format == "json" || cfg.HideParameters) {
+		return nil, fmt.Errorf("可复制执行日志需要 format=shell 且 hideParameters=false")
+	}
 	switch cfg.Level {
 	case "", LogSilent, LogError, LogWarn, LogInfo:
 	default:
@@ -84,7 +90,7 @@ func NewCommandLogger(cfg LogConfig) (*event.CommandMonitor, error) {
 			metrics = color + metrics + "\x1b[0m"
 		}
 		// 路径不插入 ANSI 转义符，供终端/IDE 按 file:line 识别跳转。
-		logger.Printf("%s\n%s %s.%s %s", entry.caller, metrics, entry.database, e.CommandName, entry.command)
+		logger.Printf("%s\n%s %s", entry.caller, metrics, entry.command)
 	}
 	return &event.CommandMonitor{
 		Started: func(ctx context.Context, e *event.CommandStartedEvent) {
@@ -95,9 +101,17 @@ func NewCommandLogger(cfg LogConfig) (*event.CommandMonitor, error) {
 			if caller == "" {
 				caller = commandCaller()
 			}
-			pending.Store(commandLogKey{e.ConnectionID, e.RequestID}, commandLogEntry{
-				caller: caller, database: singleLine(e.DatabaseName), command: safeCommand(e.Command, cfg),
-			})
+			var command string
+			if cfg.Format == "json" {
+				command = singleLine(e.DatabaseName) + "." + e.CommandName + " " + safeCommand(e.Command, cfg)
+			} else {
+				// 多数据源下仍标注实际数据库；db 始终代表这次命令所在数据库。
+				command = "[db:" + singleLine(e.DatabaseName) + "]\n" + shellCommand(e.Command, cfg)
+				if !cfg.Replayable {
+					command = "[parameters:redacted] " + command
+				}
+			}
+			pending.Store(commandLogKey{e.ConnectionID, e.RequestID}, commandLogEntry{caller: caller, command: command})
 		},
 		Succeeded: func(_ context.Context, e *event.CommandSucceededEvent) {
 			finish(e.CommandFinishedEvent, e.Reply, nil)

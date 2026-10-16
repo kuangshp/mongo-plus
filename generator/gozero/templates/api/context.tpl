@@ -38,7 +38,7 @@ func NewServiceContext(c {{.config}}) *ServiceContext {
 			Database:    c.MongoConfig.Database,    // 业务数据库名，集合名由生成的 Repository 决定。
 			MaxPoolSize: c.MongoConfig.MaxPoolSize, // 所有 Repository 共用的 Client 最大连接数。
 			Timeout:     timeout,                   // 驱动操作的默认超时，请求可设置更早的截止时间。
-			Log:         c.MongoConfig.Log,         // 数据库命令日志；level=info 输出命令和调用位置。
+			Log:         c.MongoConfig.Log,         // level=info 输出命令和调用位置；format=shell 多行显示。
 		})
 		if err != nil {
 			panic(fmt.Errorf("初始化 MongoDB 失败: %w", err))

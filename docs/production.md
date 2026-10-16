@@ -114,12 +114,14 @@ modified, err := migration.Backfill(ctx, db.Collection("users"),
 
 | LogConfig 属性 | 默认 | 说明 |
 | --- | --- | --- |
+| `Format` / `format` | shell | 多行 mongosh 风格；json 保留单行 Extended JSON；默认两种格式均先脱敏 |
+| `Replayable` / `replayable` | false | 仅用于受控开发：shell 输出真实参数和 BSON 类型供复制执行；须同时关闭 HideParameters，会输出敏感值 |
 | `HideParameters` / `hideParameters` | false | 隐藏全部参数值；go-zero 新模板默认 true |
 | `SensitiveFields` / `sensitiveFields` | 空 | 追加字段或点路径，匹配不区分大小写；常见密码、令牌、手机号、邮箱和密文字段始终脱敏 |
 | `MaxLength` / `maxLength` | 4096 | 命令内容的字节上限，范围 128～1048576；按 UTF-8 边界截断 |
 | `IncludeErrorDetails` / `includeErrorDetails` | false | 错误详情可能包含数据库回显值，默认只输出错误标记；仅受控诊断时开启 |
 
-脱敏在原始命令转为日志文本前执行，包含嵌套文档和数组。未知业务敏感字段应加入列表；生产建议同时开启参数隐藏。日志保留耗时、行数、命令类型与可由终端识别的 `file:line`。
+默认脱敏在原始命令转为日志文本前执行，包含嵌套文档和数组。未知业务敏感字段应加入列表；生产建议同时开启参数隐藏。日志保留耗时、行数、命令类型、实际数据库名与可由终端识别的 `file:line`。默认 shell 展示会移除 Session 等协议元数据；日期保留实际值，大 int64 保留精度。隐藏或截断的日志仅用于诊断，不能直接重放。Replayable 明确绕过参数脱敏；超长语句整条省略，游标后续批次和事务边界命令明确标记为无法独立重放。
 
 ## 容量验收与发布
 
