@@ -6,12 +6,13 @@ import (
 	{{.imports}}
 )
 
+// {{.logic}} 保存当前请求的上下文及业务依赖。
 type {{.logic}} struct {
 	logx.Logger
-	ctx     context.Context
-	svcCtx  *svc.ServiceContext
-	Request *http.Request
-	W       http.ResponseWriter
+	ctx     context.Context // 保留取消信号、租户和链路信息，查询仓储时继续传递。
+	svcCtx  *svc.ServiceContext // 复用服务启动时初始化的数据库和仓储。
+	Request *http.Request // 当前 HTTP 请求，供鉴权或读取请求元数据使用。
+	W       http.ResponseWriter // 当前 HTTP 响应，流式输出等场景可按需使用。
 }
 
 // New{{.logic}} 创建接口逻辑。

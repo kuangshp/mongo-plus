@@ -5,6 +5,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/kuangshp/mongo-plus/generator"
+	"github.com/kuangshp/mongo-plus/schema"
 )
 
 func TestGoctlMongoServiceContext(t *testing.T) {
@@ -12,6 +15,25 @@ func TestGoctlMongoServiceContext(t *testing.T) {
 		t.Skip("设置 MONGOPLUS_TEST_URI 运行 ServiceContext MongoDB 测试")
 	}
 	dir := newServiceFixture(t, "syntax = \"v1\"\nservice sample-api {\n @handler Ping\n get /ping\n}\n")
+	for name, content := range map[string]string{
+		"schema/user.json": `{"fields":[{"name":"name","type":"string"}]}`,
+		"mongo-plus.yaml":  "package: servicefixture\nschemaDir: schema\nmodel_pkg_path: internal/dal/entity\nout_path: internal/dal/dao\nrepo_path: internal/dal/repository\nid:\n  type: int64\n  generation: manual\nsoftDelete: false\ntimestamps: false\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := schema.LoadConfig(filepath.Join(dir, "mongo-plus.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.Generate(cfg); err != nil {
+		t.Fatal(err)
+	}
 	source := `package svc
 import (
  "bytes"
@@ -22,16 +44,21 @@ import (
  "testing"
  "time"
  "servicefixture/internal/config"
+ model "servicefixture/internal/dal/entity"
+ "servicefixture/internal/dal/repository"
  mp "github.com/kuangshp/mongo-plus"
  "github.com/kuangshp/mongo-plus/field"
  "go.mongodb.org/mongo-driver/v2/bson"
  "go.mongodb.org/mongo-driver/v2/mongo"
  "github.com/zeromicro/go-zero/core/conf"
 )
-type testUser struct { ID int64 ` + "`bson:\"_id\"`" + `; Name string ` + "`bson:\"name\"`" + ` }
 func TestGeneratedMongoLifecycle(t *testing.T) {
+ previous:=mp.DefaultDB()
+ defer mp.Use(previous)
+ mp.Use(nil)
  disabled:=NewServiceContext(config.Config{})
  if disabled.MongoDB!=nil {t.Fatal("disabled MongoDB created a client")}
+ if mp.DefaultDB()!=nil {t.Fatal("disabled MongoDB registered a default connection")}
  if err:=disabled.Close();err!=nil {t.Fatal(err)}
  var c config.Config
  c.MongoConfig=config.MongoConfig{Enabled:true,URI:os.Getenv("MONGOPLUS_TEST_URI"),Database:"mongo_plus_test_gozero_"+bson.NewObjectID().Hex(),MaxPoolSize:10,TimeoutSeconds:10}
@@ -39,11 +66,22 @@ func TestGeneratedMongoLifecycle(t *testing.T) {
  c.MongoConfig.Log=mp.LogConfig{Level:mp.LogInfo,Writer:&logs}
  s:=NewServiceContext(c)
  defer s.Close()
+ if mp.DefaultDB()!=s.MongoDB {t.Fatal("ServiceContext did not register the default connection")}
+ disabled=NewServiceContext(config.Config{})
+ if disabled.MongoDB!=nil || mp.DefaultDB()!=s.MongoDB {t.Fatal("disabled ServiceContext replaced the active default connection")}
+ invalid:=c
+ invalid.MongoConfig.URI="://invalid"
+ func(){defer func(){if recover()==nil {t.Fatal("invalid MongoDB connection accepted")}}();NewServiceContext(invalid)}()
+ if mp.DefaultDB()!=s.MongoDB {t.Fatal("failed MongoDB connection replaced the active default connection")}
  ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second);defer cancel()
- r:=mp.MustRepository[testUser,int64](s.MongoDB,mp.CollectionConfig{Name:"users",ID:mp.IDConfig{Type:"int64",Generation:"manual"}})
- if err:=r.Create(ctx,&testUser{ID:1,Name:"service context"});err!=nil {t.Fatal(err)}
+ r:=repository.NewUserRepository()
+ if r.Native().Database().Name()!=s.MongoDB.Native().Name() {t.Fatal("parameterless repository did not use the service database")}
+ explicitDB:=mp.NewDatabase(s.MongoDB.Native().Client().Database(s.MongoDB.Native().Name()+"_explicit"))
+ explicit:=repository.NewUserRepository(explicitDB)
+ if explicit.Native().Database().Name()!=explicitDB.Native().Name() || mp.DefaultDB()!=s.MongoDB {t.Fatal("explicit repository connection did not override the default independently")}
+ if err:=r.Create(ctx,&model.UserEntity{ID:1,Name:"service context"});err!=nil {t.Fatal(err)}
  if !strings.Contains(logs.String(),".insert") || !strings.Contains(logs.String(),"[rows:1]") {t.Fatalf("command log not configured: %s",&logs)}
- var got testUser
+ var got model.UserEntity
  if err:=r.WithContext(ctx).Where(field.New[int64]("_id").Eq(1)).ScanOne(&got);err!=nil||got.Name!="service context" {t.Fatalf("repository injection failed: %+v %v",got,err)}
  if err:=s.MongoDB.Native().Drop(ctx);err!=nil {t.Fatal(err)}
  if err:=s.Close();err!=nil {t.Fatal(err)}

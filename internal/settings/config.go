@@ -70,22 +70,22 @@ func (c IDConfig) Normalize() (IDConfig, error) {
 
 // CollectionConfig 是生成 Repository 携带的集合规则。
 type CollectionConfig struct {
-	Name           string
-	ID             IDConfig
-	SoftDelete     bool
-	Timestamps     bool
-	TenantField    string
-	CreatedByField string
-	UpdatedByField string
+	Name           string   // 实际集合名，Repository 不会再次转换单复数。
+	ID             IDConfig // 主键类型、生成方式与可选的自增区间预分配。
+	SoftDelete     bool     // true 时普通删除设置 deleted_at，普通查询排除已删除文档。
+	Timestamps     bool     // true 时创建和更新自动维护对应的时间字段。
+	TenantField    string   // 可选租户 BSON 字段，从 WithTenant 的 Context 中读取值。
+	CreatedByField string   // 可选创建人 BSON 字段，创建时从 WithActor 读取。
+	UpdatedByField string   // 可选更新人 BSON 字段，创建和更新时从 WithActor 读取。
 }
 
 // Config 是连接配置；URI 可通过业务项目自己的配置系统注入。
 type Config struct {
-	URI         string        `json:"uri" yaml:"uri"`
-	Database    string        `json:"database" yaml:"database"`
-	MaxPoolSize uint64        `json:"maxPoolSize" yaml:"maxPoolSize"`
-	Timeout     time.Duration `json:"-" yaml:"-"`
-	Log         LogConfig     `json:"log,optional" yaml:"log"`
+	URI         string        `json:"uri" yaml:"uri"`                 // 必填连接地址；认证、副本集等参数通过 URI 配置。
+	Database    string        `json:"database" yaml:"database"`       // 必填数据库名，集合由各 Repository 单独指定。
+	MaxPoolSize uint64        `json:"maxPoolSize" yaml:"maxPoolSize"` // Client 最大连接数；0 使用驱动默认值。
+	Timeout     time.Duration `json:"-" yaml:"-"`                     // Go 中使用 10*time.Second 等带单位的值；0 不设置操作超时。
+	Log         LogConfig     `json:"log,optional" yaml:"log"`        // 命令日志独立配置，默认关闭；连接创建后不能补装监控器。
 }
 
 // LogLevel 控制 MongoDB 命令日志；零值关闭。
@@ -101,8 +101,8 @@ const (
 // LogConfig 配置驱动命令日志。info 输出全部，warn 输出慢命令和错误，error 仅输出错误。
 // 日志含实际命令参数；Writer 仅通过 Go 设置，默认输出到 os.Stdout。
 type LogConfig struct {
-	Level           LogLevel  `json:"level,optional" yaml:"level"`
+	Level           LogLevel  `json:"level,optional" yaml:"level"`                     // 空值或 silent 关闭；info 输出全部命令。
 	SlowThresholdMS int64     `json:"slowThresholdMs,optional" yaml:"slowThresholdMs"` // 0 使用 200ms。
-	Colorful        bool      `json:"colorful,optional" yaml:"colorful"`
-	Writer          io.Writer `json:"-" yaml:"-"`
+	Colorful        bool      `json:"colorful,optional" yaml:"colorful"`               // 是否输出 ANSI 颜色；日志文件通常保持 false。
+	Writer          io.Writer `json:"-" yaml:"-"`                                      // Go 中可指定输出流；nil 使用标准输出，无法通过 YAML 注入。
 }

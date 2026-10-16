@@ -472,6 +472,8 @@ userRepository := repository.NewUserRepository()
 // 需要显式注入时：repository.NewUserRepository(db)，传入连接优先于 Use。
 ```
 
+go-zero 模板已在 `NewServiceContext` 中于连接成功后自动调用 `mongoplus.Use(db)`，业务仓储可直接使用无参构造。手写启动入口按上例注册一次即可；`Connect` 和 `NewDatabase` 本身不会更改默认连接。已有服务的 ServiceContext 不会被 goctl 增量生成覆盖，需在连接成功后合并这一行初始化代码。显式传入数据库的仓储仍优先使用指定连接。
+
 数据库包装器和 Repository 在启动时创建并注入业务层，不要每个请求新建 Client。已有官方驱动数据库可用 `mongoplus.NewDatabase(nativeDB)` 包装；创建文档直接使用该 Client 的 BSONOptions/Registry，兼容 UseJSONStructTags 和自定义字段编码器，无需重复配置。自动管理字段（ID、租户、时间、逻辑删除、审计）应使用明确的 bson 标签。关闭连接由拥有该 Client 的启动入口负责。
 
 Gin 和 go-zero 都只需传入请求的 `context.Context`，没有框架绑定。框架的参数校验仍由业务项目负责；MongoDB 校验规则需通过配置了数据源的 Generate、SyncSchema 或 schema apply 建立。

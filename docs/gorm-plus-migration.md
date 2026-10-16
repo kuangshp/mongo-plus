@@ -41,7 +41,7 @@ userRepository := repository.NewUserRepository()
 // 显式注入时：repository.NewUserRepository(db)，传入连接优先于 Use。
 ```
 
-`mongoConfig` 来自业务项目配置。已有官方驱动数据库可以用 `mongoplus.NewDatabase(nativeDB)` 包装。Repository 在启动时创建一次并复用；只有拥有 Client 的入口负责关闭连接。
+`mongoConfig` 来自业务项目配置。go-zero 模板会在 `NewServiceContext` 连接成功后自动执行上述 `mongoplus.Use(db)`，无需给每个 Repository 传入连接。已有 ServiceContext 需手动合并这一行，goctl 不会覆盖已有实现。已有官方驱动数据库可以用 `mongoplus.NewDatabase(nativeDB)` 包装。Repository 在启动时创建一次并复用；只有拥有 Client 的入口负责关闭连接。
 
 Repository 模板按 gorm-plus 的结构组织：`user_gen.go` 显式声明 `defaultUserRepository`、`iDefaultUserRepository`、各基础方法及 `newDefaultUserRepository`；`user.go` 声明 `customerUserRepository`、对外接口、编译期接口检查和 `NewUserRepository`。接口不再通过嵌入 `mongoplus.Contract` 隐式取得方法。新增基础能力后需要重新生成 `_gen.go`。
 

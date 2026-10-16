@@ -161,20 +161,24 @@ func (r *default{{.Name}}Repository) Native() *mongo.Collection {
 }
 
 // newDefault{{.Name}}Repository 使用默认连接或显式连接，以及生成时解析的集合配置。
+// 这里只创建仓储包装器，复用已有 Client，不新建连接，也不自动同步集合结构。
 func newDefault{{.Name}}Repository(db ...*mongoplus.Database) *default{{.Name}}Repository {
+	// go-zero 启动模板已注册默认连接；显式传参时优先使用指定数据库。
 	database := mongoplus.DefaultDB()
 	if len(db) > 0 {
 		database = db[0]
 	}
-	return &default{{.Name}}Repository{Repository: mongoplus.MustRepository[model.{{.Entity}}, {{.IDType}}](database, mongoplus.CollectionConfig{
-		Name: {{quote .Collection}},
-		ID: mongoplus.IDConfig{
-			Type:       mongoplus.{{.IDTypeConst}},
-			Generation: mongoplus.{{.IDGenConst}},
-			BlockSize:  {{.BlockSize}},
-		},
-		SoftDelete: {{.SoftDelete}},
-		Timestamps: {{.Timestamps}},
-		TenantField: {{quote .TenantField}},
-	})}
+	return &default{{.Name}}Repository{
+		Repository: mongoplus.MustRepository[model.{{.Entity}}, {{.IDType}}](database, mongoplus.CollectionConfig{
+			Name: {{quote .Collection}}, // 实际集合名，与 schema 中的 collection 或命名规则一致。
+			ID: mongoplus.IDConfig{
+				Type:       mongoplus.{{.IDTypeConst}},
+				Generation: mongoplus.{{.IDGenConst}},
+				BlockSize:  {{.BlockSize}}, // int64 自增主键的预分配数量；0/1 表示按需申请。
+			},
+			SoftDelete:  {{.SoftDelete}}, // 启用时普通删除仅设置 deleted_at。
+			Timestamps:  {{.Timestamps}}, // 启用时自动维护 created_at、updated_at。
+			TenantField: {{quote .TenantField}}, // 租户 BSON 字段；空字符串表示未配置集合级租户字段。
+		}),
+	}
 }

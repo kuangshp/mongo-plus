@@ -116,7 +116,9 @@ MongoConfig:
   TimeoutSeconds: 10
 ```
 
-模板默认 Enabled=false，便于先运行 HTTP 接口；实际访问数据库时必须开启。启用后，NewServiceContext 在启动时创建一个 Client 并 Ping，连接失败则停止启动；超时必须在 1～3600 秒之间。关闭时 MongoDB 字段为 nil，不应调用数据库业务接口。
+实际访问数据库时必须开启 MongoConfig.Enabled。启用后，NewServiceContext 在启动时创建一个 Client 并 Ping，连接成功后自动调用 `mongoplus.Use(db)` 注册进程默认数据库，所有生成的 `repository.NewXRepository()` 均可无参构造。连接失败则停止启动；超时必须在 1～3600 秒之间。关闭时 MongoDB 字段为 nil，不注册或清除已有默认连接，不应调用数据库业务接口。
+
+已有服务的 ServiceContext 不会被 goctl 增量生成覆盖；升级工具后，需要在原 `mongoplus.Connect` 成功且错误检查通过后手动合并一次 `mongoplus.Use(db)`。默认连接是进程级配置，多个服务初始化时以后一次成功注册为准；多数据源需要固定连接时，继续使用 `repository.NewXRepository(db)` 显式指定。
 
 需要同步 schema 时，运行时配置与可选 `mongo-plus.yaml` 中的数据库配置应指向相同的目标环境；URI 从业务配置读取，不写进 Entity、Repository 或 Logic。
 
@@ -131,7 +133,8 @@ UserRepository repository.UserRepository
 if db == nil {
     panic("用户模块需要开启 MongoConfig.Enabled")
 }
-users := repository.NewUserRepository(db)
+users := repository.NewUserRepository() // 模板已注册默认连接，无需每个仓储重复传 db。
+// 需要固定到其他数据源时可用 repository.NewUserRepository(otherDB)。
 
 // 在原 return &ServiceContext{...} 内增加：
 UserRepository: users,

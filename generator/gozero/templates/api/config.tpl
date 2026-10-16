@@ -10,6 +10,7 @@ import (
     "github.com/kuangshp/mongo-plus/logrotate"
 )
 
+// Config 汇总 HTTP 服务及各可选组件的运行配置。
 type Config struct {
 	rest.RestConf
 	{{.auth}}
@@ -24,10 +25,10 @@ type Config struct {
 
 // MongoConfig 是服务的运行时配置；schema 生成与同步使用独立的 mongo-plus.yaml。
 type MongoConfig struct {
-	Enabled bool `json:",default=false"`
-	URI string `json:",optional"`
-	Database string `json:",optional"`
-	MaxPoolSize uint64 `json:",default=100"`
-	TimeoutSeconds int64 `json:",default=10"`
-	Log mongoplus.LogConfig `json:",optional"` // MongoDB 命令日志，默认关闭。
+	Enabled        bool                `json:",default=false"` // 是否初始化 MongoDB；省略时关闭。
+	URI            string              `json:",optional"`      // 开启时必填，认证和副本集参数也放在 URI 中。
+	Database       string              `json:",optional"`      // 开启时必填，指定业务数据库名。
+	MaxPoolSize    uint64              `json:",default=100"`   // Client 最大连接数；所有 Repository 共用连接池。
+	TimeoutSeconds int64               `json:",default=10"`    // 初始化及驱动操作的超时秒数，范围 1～3600。
+	Log            mongoplus.LogConfig `json:",optional"`      // 命令日志独立于服务 Log，level=info 开启全部命令输出。
 }

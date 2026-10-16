@@ -99,7 +99,9 @@ func main() {
 	defer func() {
 		// 先停止 HTTP，再关闭所有 Repository 共享的 MongoDB Client。
 		server.Stop()
-		if err := ctx.Close(); err != nil { log.Printf("关闭 MongoDB 连接失败: %v", err) }
+		if err := ctx.Close(); err != nil {
+			log.Printf("关闭 MongoDB 连接失败: %v", err)
+		}
 	}()
 	handler.RegisterHandlers(server, ctx)
 
@@ -107,7 +109,11 @@ func main() {
         // 使用独立路由，保留 StaticConfig 的文件处理器；原样输出页面和 JSON。
         for _, route := range docs.Routes() {
             for _, method := range []string{http.MethodGet, http.MethodHead} {
-                server.AddRoute(rest.Route{Method: method, Path: route, Handler: docs.ServeHTTP})
+                server.AddRoute(rest.Route{
+                    Method:  method,
+                    Path:    route,
+                    Handler: docs.ServeHTTP,
+                })
             }
         }
         // 监听全部网卡时，输出本机可直接访问的地址；IPv6 由 JoinHostPort 正确加括号。
