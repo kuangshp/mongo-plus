@@ -760,7 +760,7 @@ db.UseCache(sharedCache) // 也可以在启动时统一 RegisterCache(sharedCach
 err := db.ConfigureCache(mongoplus.CacheConfig{Namespace: "orders-prod-primary"})
 ```
 
-仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。可选的前缀删除只负责回收旧条目，未实现时旧数据条目按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。后端读写失败时 SFCache 接口不能报告失效错误，因此仍需实时强一致的场景应使用 Disabled；外部程序写入后也必须通知失效。共享缓存的总容量由后端管理，单条结果仍遵守 MaxEntryBytes 限制。
+仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。`SFInvalidatePrefix` 可以按方法名回收该前缀下的旧条目；后端没有批量删除时，这些条目按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。后端读写失败时 SFCache 接口不能报告失效错误，因此仍需实时强一致的场景应使用 Disabled；外部程序写入后也必须通知失效。共享缓存的总容量由后端管理，单条结果仍遵守 MaxEntryBytes 限制。
 
 可在启动时调整缓存容量，缓存仍由每次查询的 WithCache 显式开启：
 
@@ -1276,7 +1276,7 @@ db, err = mongoplus.DS.Auto(mongoplus.DSWithWrite(ctx))   // 写标记优先，�
 db, err = mongoplus.DS.Auto(mongoplus.DSWithName(ctx, "analytics"))
 ```
 
-`DS.Read`、`DS.Write`、`DS.Ping` 和 `DS.Close` 用于显式选择、健康检查和关闭。同一个 Client 只会关闭一次。
+`DS.Read`、`DS.Write`、`DS.Ping` 和 `DS.Close` 用于显式选择、健康检查和关闭。同一个数据库包装器只关闭一次。
 
 ### JSON 查询文件
 
@@ -1301,7 +1301,7 @@ err = mongoplus.DALWithTx(ctx, func(txCtx context.Context) error {
 })
 ```
 
-分页计数文件是数据文件名前加 `count_`，例如 `user/page.json` 对应 `user/count_page.json`。`DALQueryOne` 找不到记录时返回 `(nil, nil)`。`WithDALDebug`、`WithDALHook` 和 `DALPreload` 用于开发日志、耗时回调和启动预热。
+分页计数文件是数据文件名前加 `count_`，例如 `user/page.json` 对应 `user/count_page.json`。`DALQueryPage` 的 `filterArgs` 会传给数据文件和计数文件，`pageArgs` 只追加在数据文件的过滤参数后面。`DALQueryOne` 找不到记录时返回 `(nil, nil)`。`WithDALDebug`、`WithDALHook` 和 `DALPreload` 用于开发日志、耗时回调和启动预热。`NewDal` 会把它设为进程默认实例，之后的 `DALQuery` 和 `DALExec` 使用这个实例。
 
 ## 性能与生产使用
 
