@@ -13,7 +13,7 @@ err := mongoplus.RegisterDataPermission(db, mongoplus.DataPermissionConfig{
 })
 ```
 
-Strict 默认 false 兼容旧项目；开启后，未排除的集合缺少权限注入函数就返回 `ErrDataPermissionRequired`，不会命中已有缓存。鉴权中间件先将服务端生成的权限函数放入标准请求 Context，再调用 `mongoplus.RequireDataPermission(ctx)` 检查，并将该 Context 传入后续 Handler/Logic。缺失时中间件应中止请求并返回 403，Repository 是第二道检查。
+注册数据权限后，未排除的集合缺少权限注入函数就返回 `ErrDataPermissionRequired`，不会命中已有缓存。旧项目要恢复“没有注入函数就不加条件”，在配置里设置 `AllowMissing: true`。鉴权中间件先将服务端生成的权限函数放入标准请求 Context，再调用 `mongoplus.RequireDataPermission(ctx)` 检查，并将该 Context 传入后续 Handler/Logic。缺失时中间件应中止请求并返回 403，Repository 是第二道检查。
 
 `WithDataPermission(ctx, fn)` 中，`fn` 返回空条件仍表示显式允许该集合的全部数据；没有权限的用户应返回错误或永不匹配的条件。`SkipDataPermission` 仍是受控管理操作入口，不能由请求参数直接决定。该检查不替代业务鉴权，也不验证创建文档是否符合业务写入权限。
 
@@ -54,17 +54,19 @@ db.CacheObserver = func(ctx context.Context, event mongoplus.CacheEvent) {
 | 运维观测 | `PendingCacheInvalidations()` 返回未完成集合；`InvalidateCacheContext` 显式返回失效错误 |
 | 严格配置遇到旧适配器 | 绕过缓存，上报 `ErrCacheErrorReportingRequired`，不假定后端成功 |
 
-恢复队列在当前进程内存中，不是持久化一致性协议。其他实例在故障恢复窗口或写进程崩溃后仍可能命中旧值。跨实例强一致的关键状态查询应使用 `CacheConfig{Disabled: true}`，它会忽略调用方的 `WithCache` 和 `WithSingleFlight`。数据库写入成功后发生缓存错误，不应重放业务写入；使用监控和恢复接口处理缓存。
+已连接数据库时，失效会先把集合版本写入 `__mongo_plus_cache_epochs`。其他实例按这个版本读取共享缓存，版本写入成功后不会再命中旧条目。版本写入失败时，本进程绕过缓存并重试；进程在写入成功前退出，其他实例仍可能看到旧缓存。跨实例强一致的关键状态查询应使用 `CacheConfig{Disabled: true}`，它会忽略调用方的 `WithCache` 和 `WithSingleFlight`。数据库写入成功后发生缓存错误，不应重放业务写入；使用监控和恢复接口处理缓存。同一 Namespace 的实例才能共享这个版本号。
 
 ## 公共 SF 参数与内存上限
 
-`SF`、`SFWithTTL` 和 `SFNoCache` 会检查 JSON 参数序列化错误。NaN、Inf、循环引用和自定义编码失败返回 `ErrInvalidCacheArgs`，不会执行加载函数，也不参与缓存或请求合并。调用方应修正参数，不能丢弃错误后把返回零值当作有效数据。租户和权限范围仍必须显式包含在 Args 中。
+`SF`、`SFWithTTL` 和 `SFNoCache` 会先检查 JSON 参数序列化错误，再递归编码参数类型和值。ObjectID/string、time.Time/string、数字类型和嵌套 interface 中的实际类型不会共用键，map 顺序规范化、数组和 BSON D 顺序保留；私有非零状态需显式转换为键参数。自定义 JSON 类型使用其公开编码契约，同名查询应固定返回类型。NaN、Inf、循环引用和自定义编码失败返回 `ErrInvalidCacheArgs`，不会执行加载函数，也不参与缓存或请求合并。调用方应修正参数，不能丢弃错误后把返回零值当作有效数据。租户和权限范围仍必须显式包含在 Args 中。
 
 默认 `MemoryCache` 上限为 1024 条，使用 LRU，每秒主动清理过期项。通过 `NewMemoryCacheWithConfig` 调整 `MaxEntries` 和 `CleanupInterval`；两者的零值分别使用上述默认值，负值返回错误。TTL 为 0 的条目也可能被容量淘汰。这是条目数上限，不是字节或 RSS 上限；不要用公共 SF 无限制地缓存大集合。`Len()` 可观察实际保留数量；结束使用时 `Close()`，或用 `StopSFCache()` 关闭全局缓存。
 
 ## 敏感字段标签升级
 
 新增、更新、读取及仓储 `SensitiveEq` 共用按实体类型隔离的字段元数据。仅使用实体标签时，无需重复填写 `SensitiveConfig.Fields`。密文与盲索引使用实体 BSON 路径；不同实体的同名业务字段不会互相覆盖。字段配置、操作符及生成接口的升级说明见 [敏感字段](../README.md#敏感字段)。
+
+命名嵌套对象、匿名嵌入、指针、切片及数组中的敏感字段均沿用该元数据；空对象安全跳过。更新敏感叶子使用完整路径，数组必须有数字下标；整个敏感父对象替换、动态 map/interface 敏感实体及递归敏感类型会明确报错。创建会隔离敏感写入涉及的指针和切片；单条失败不回填，有序批量只回填已确认成功前缀。事务回滚不会恢复已成功语句的内存回填。示例见 [嵌套敏感字段与失败写入](../README.md#嵌套敏感字段与失败写入)。
 
 此修复阻止后续标签字段更新直接写入明文，但不会自动清洗既有数据。上线前检查受影响集合是否存在遗留业务明文字段，并核对它与旧密文的实际新旧关系；先备份，再以独立迁移重建密文与盲索引、删除遗留明文、通知缓存失效，最后验证脱敏与授权读取。不要简单假设旧密文或遗留明文中的任意一方总是正确。
 
@@ -137,3 +139,30 @@ MONGOPLUS_TEST_URI='测试专用副本集URI' make tag
 本次将 `golang.org/x/text` 更新到 v0.41.0，修复其 [GO-2026-6629](https://pkg.go.dev/vuln/GO-2026-6629) 模块告警；其依赖带动 x/sync 更新到 v0.22.0，Go 最低版本仍为 1.25.5。
 
 `govulncheck` 的可达调用链检查通过，不等于依赖模块中的所有包都无漏洞。为保留 Go 1.25 兼容性，本库暂保留 x/crypto v0.53.0：扫描会报告未被本库导入的 SSH/OpenPGP 模块告警，SSH 修复版本 v0.56.0 要求 Go 1.26。使用方若同时使用 SSH/OpenPGP，需要在自己的主模块独立处理并运行漏洞扫描；不要将本库扫描结果当作业务项目整体安全证明。
+
+## 本轮隔离与兼容性回归
+
+新增回归覆盖：批量省略 filter 的跨租户写、更新管道和重命名目标保护、嵌套租户赋值、敏感字段自动填充、订阅 OR 权限、geoNear 首阶段、并发任务领取、原子替换系统字段、Upsert 与事务回滚，以及索引语义漂移。
+
+启动时使用生成的 `repository.RegisterGeneratedCollections(db)` 或 `db.RegisterCollections(...)` 注册规则；不同数据源包装器分别注册。遇到同集合冲突不再按初始化顺序覆盖。
+
+共享缓存每次读取先向 MongoDB 主节点取得版本号，再查缓存；每次发布失效需要 majority 版本写入。缓存收益应以真实数据、网络延迟和查询复杂度测量，不能以命中率直接推断响应更快。CacheObserver 新增 hit / miss / epoch 事件，可统计收益与版本读取故障。业务写入与版本发布并非一个原子协议，关键一致性查询保持 CacheConfig.Disabled=true。
+
+CI 增加 MongoDB 6.0.18 / 7.0 / 8.0 副本集矩阵，并构建 Go 1.25.5 最低版本。配置矩阵不代表远端已通过，本机报告需标注实际服务端版本；Search、分片、跨命名空间 BulkWrite 和目标业务长稳压测仍需各自部署验证。
+
+
+## 边界修复与升级行为
+
+- DAL 在一次操作中固定 Provider 的选择，分页、游标、订阅和写后失效不再重复路由；事务和仓储绑定继续优先。
+- 含自定义 BSON 编解码方法或 interface 动态字段的结果绕过仓储共享缓存与合并。共享缓存键版本变为 v4；自行注册 Client BSON Registry 编解码器的项目应关闭仓储缓存，或独立证明往返编码保持值不变。
+- 敏感字段的密文/索引显式路径必须匹配实体 BSON 标签，所有绑定的存储路径不能相等或形成父子关系。无效配置在写入前报错；修复不会恢复历史上已经被覆盖的数据。
+- 自增仓储拒绝原子 Upsert，包括 FindOneAndReplace；需要显式主键 Upsert 时使用手动 ID 仓储。不能只推进序列表，因为其他实例可能仍持有已分配号段。
+- 普通 Wrapper 写入透传 Collation、Hint、Let、Comment；不适用的排序、投影、分页、缓存和游标选项改为明确报错。
+- Capped 创建和 Plan 比较使用同一容量规范值，避免服务端取整后反复提示伪漂移；真实容量变化仍要求显式迁移。[服务端容量取整规则](https://www.mongodb.com/docs/v8.0/core/capped-collections/create-capped-collection/)。
+
+
+## 系统性契约验收
+
+查询、缓存、删除、分页、敏感字段和日志的统一行为见[接口契约表](contracts.md)。公共 SF 的 v2 键、仓储共享缓存的 v4 键都隔离旧数据，旧条目按原 TTL 或运维规则回收。
+
+原生功能并不自动继承 Repository 保护；缺少封装的高级 MongoDB 能力应通过有权限边界的业务仓储使用。通过测试表示列明契约在测试场景中成立，不表示所有官方 API 都已封装，也不能替代目标业务的容量与长期稳定性验收。

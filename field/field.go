@@ -223,3 +223,41 @@ func group(op string, conditions []Condition) Condition {
 	}
 	return Condition{Document: bson.D{{Key: op, Value: docs}}}
 }
+
+// Mul 按数值相乘；Min/Max 仅在新值更小/更大时替换。
+func (f Numeric[T]) Mul(value T) UpdateOp { return UpdateOp{"$mul", f.path, value} }
+func (f Field[T]) Min(value T) UpdateOp   { return UpdateOp{"$min", f.path, value} }
+func (f Field[T]) Max(value T) UpdateOp   { return UpdateOp{"$max", f.path, value} }
+
+// CurrentDate 使用服务器时间设置 BSON Date，时间字段应由此操作或 Timestamps 单独维护。
+func (f Field[T]) CurrentDate() UpdateOp { return UpdateOp{"$currentDate", f.path, true} }
+
+// PopFirst/PopLast 删除数组首尾元素；PullAll 删除全部匹配的值。
+func (f Array[T]) PopFirst() UpdateOp { return UpdateOp{"$pop", f.path, -1} }
+func (f Array[T]) PopLast() UpdateOp  { return UpdateOp{"$pop", f.path, 1} }
+func (f Array[T]) PullAll(values ...T) UpdateOp {
+	if values == nil {
+		values = []T{}
+	}
+	return UpdateOp{"$pullAll", f.path, values}
+}
+
+// All/Size 查询数组中全部给定值及数组长度。
+func (f Array[T]) All(values ...T) Condition {
+	if values == nil {
+		values = []T{}
+	}
+	return f.condition("$all", values)
+}
+func (f Array[T]) Size(value int) Condition {
+	if value < 0 {
+		return Condition{Err: fmt.Errorf("数组长度不能为负数")}
+	}
+	return f.condition("$size", value)
+}
+
+// Nor 匹配所有子条件都不成立的文档。
+func Nor(conditions ...Condition) Condition { return group("$nor", conditions) }
+
+// BSONType 按 MongoDB 类型名或类型编号过滤。
+func (f Field[T]) BSONType(value any) Condition { return f.condition("$type", value) }

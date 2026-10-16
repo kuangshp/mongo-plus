@@ -8,6 +8,12 @@ import (
 // Contract 定义公共仓储的基础能力，供接口约束和手写仓储复用。
 // 生成 Repository 显式声明对应方法，业务扩展接口继续嵌入生成的 iDefault 接口。
 type Contract[T any, K ID] interface {
+	FindOneAndUpdate(context.Context, QueryOption, ModifyOptions, ...UpdateOption) (*T, error)
+	FindOneAndDelete(context.Context, QueryOption, ...DeleteOption) (*T, error)
+	FindOneAndReplace(context.Context, QueryOption, *T, ModifyOptions) (*T, error)
+	Distinct(context.Context, string, ...QueryOption) ([]any, error)
+	EstimatedDocumentCount(context.Context) (int64, error)
+
 	Source
 	WithContext(context.Context) *Aggregation
 	Create(context.Context, *T) error

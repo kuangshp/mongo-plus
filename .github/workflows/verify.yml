@@ -11,6 +11,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mongodb: ['6.0.18', '7.0', '8.0']
     env:
       MONGOPLUS_TEST_URI: mongodb://127.0.0.1:27017,127.0.0.1:27018,127.0.0.1:27019/?replicaSet=mongo-plus-test&retryWrites=true
       MONGOPLUS_GIN_INTEGRATION: '1'
@@ -26,7 +30,7 @@ jobs:
       - name: Start dedicated three-member MongoDB replica set
         run: |
           for port in 27017 27018 27019; do
-            docker run -d --name "mongo-plus-$port" --network host mongo:8.0 \
+            docker run -d --name "mongo-plus-$port" --network host mongo:${{ matrix.mongodb }} \
               --port "$port" --replSet mongo-plus-test --bind_ip 127.0.0.1
           done
           for port in 27017 27018 27019; do
@@ -46,6 +50,7 @@ jobs:
         run: |
           go vet ./...
           go build ./...
+          GOTOOLCHAIN=go1.25.5 go build ./...
       - name: Security scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Race and full integration tests

@@ -52,7 +52,7 @@ func NewDAL(db *mongoplus.Database) (*mongoplus.DAL, error) {
 }
 ```
 
-`Preload` 只检查文件读取；绑定参数和文件语义在执行时校验。`NewDal` 同时注册进程默认 DAL；多实例项目通过 `WithDALDB(ctx, dal)` 或下面的 `Repository.WithDAL` 明确选择实例。`dal.Close()` 只停止文件缓存清理，数据库由拥有 Client 的启动入口关闭。`NewDalWithProvider` 的 provider 实现 `Get(context.Context) (*Database, error)` 即可按上下文选择数据源；Repository.WithDAL 以仓储数据源为准，DALWithTx 在事务开始时固定所选数据库。
+`Preload` 只检查文件读取；绑定参数和文件语义在执行时校验。`NewDal` 同时注册进程默认 DAL；多实例项目通过 `WithDALDB(ctx, dal)` 或下面的 `Repository.WithDAL` 明确选择实例。`dal.Close()` 只停止文件缓存清理，数据库由拥有 Client 的启动入口关闭。`NewDalWithProvider` 的 provider 实现 `Get(context.Context) (*Database, error)` 即可按上下文选择数据源；每次公开 DAL 调用只解析一次 Provider，权限检查、执行和缓存失效始终使用同一包装器；分页的数据与计数也共用该选择。下一次调用重新路由。Repository.WithDAL 以仓储数据源为准，DALWithTx 在事务开始时固定所选数据库。
 
 ## 与 gorm-plus 的调用对应
 
@@ -106,8 +106,8 @@ func NewDAL(db *mongoplus.Database) (*mongoplus.DAL, error) {
 | `insertOne` | Exec | 原生插入 |
 | `updateOne` | Exec | 原生单条更新 |
 | `update` / `updateMany` | Exec | 都是原生多条更新 |
-| `deleteOne` | Exec | 物理删除一条 |
-| `delete` / `deleteMany` | Exec | 都是物理删除多条；不自动转换软删除 |
+| `deleteOne` | Exec | 默认按集合配置逻辑/物理删除一条；物理删除需显式 DALPhysicalDelete |
+| `delete` / `deleteMany` | Exec | 集合仓储未开启逻辑删除时是物理删除；已开启时改为设置 deleted_at，除非 Context 显式使用 DALPhysicalDelete |
 | `bulkWrite` | BulkWrite / Exec | 六种同集合混合写入模型 |
 | `watch` | Watch | 集合级变更流；不能放进 Session / 事务 |
 
@@ -271,7 +271,7 @@ DAL 单条写入、BulkWrite、原生回调及 `$out/$merge` 使用统一失效�
 
 写入聚合通过 `DALExec` 显式执行，必须以 `$out/$merge` 结束，同库目标集合自动识别并失效缓存。由于 Aggregate 不提供 Acknowledged 标记，写入聚合显式使用 majority；不在 Session/事务中执行。它不返回影响数量，RowsAffected 为 0 表示未知。跨库目标通过 DALNative 显式实现，处理目标库缓存。读入口拒绝 `$out/$merge`，避免一次报表调用意外写库。
 
-DAL 不自动套用 Repository 的租户、严格数据权限、软删除、审计、自增 ID、敏感字段处理。`WithDAL` 绑定数据源/事务，不注入这些条件。必须在每个读写集合（包括 lookup/union 子管道、批量替换文档）明确保持业务规则；文件不经过 Repository 结果缓存。Hook 可见原始参数，仅向可信内部观测系统传递并自行脱敏。
+DAL 执行时为顶层 filter、pipeline、变更订阅、插入和批量操作追加数据库上的租户、数据权限，以及该集合仓储声明的逻辑删除。`DALUnscoped` 只放开已删除记录的过滤范围，不改变删除方式。要物理删除必须使用 `DALPhysicalDelete(ctx)`；要同时包含历史软删除文档，使用 `DALPhysicalDelete(DALUnscoped(ctx))`。两个标记都保留租户和数据权限。`$lookup` / `$unionWith` 子管道、自增主键、操作人自动填充和敏感字段仍要业务自己处理。文件不经过 Repository 结果缓存。Hook 可见原始参数，仅向可信内部观测系统传递并自行脱敏。
 
 ## 验证与官方语义
 
@@ -283,3 +283,59 @@ MONGOPLUS_TEST_URI='测试专用副本集 URI' go test -race -count=1 ./examples
 测试包含窗口聚合、聚合单条、聚合分页计数、游标提前停止、部分成功批量与 upsert、写入聚合目标失效、原生回调部分失败、仓储 WithTx、Provider 固定、回滚和提交、订阅 token 恢复及取消。示例另验证 lookup 子集合隔离和嵌入文件可执行。
 
 原生语义参见官方 [BulkWrite](https://www.mongodb.com/docs/drivers/go/current/crud/bulk/)、[Change Streams](https://www.mongodb.com/docs/drivers/go/current/monitoring-and-logging/change-streams/) 和[事务](https://www.mongodb.com/docs/drivers/go/current/crud/transactions/)。服务端/部署不支持的阶段不会被本库模拟或自动降级。
+
+## 隔离与特殊语法
+
+`allowAll` 仅放宽业务过滤检查。批量模型省略 filter 时，仍会补齐租户、权限与删除范围；没有业务过滤且未 AllowAll 时执行前报错。系统条件不能被模型上的 allowAll 覆盖。
+
+更新管道仅自动接受 `$set` / `$addFields` / `$unset`，并保护租户与系统路径；`$project` / `$replaceRoot` / `$replaceWith` 等无法证明保留系统字段的阶段要求显式原生扩展。普通更新同时检查 `$rename` 的来源和目标路径。
+
+`$geoNear` 保持首阶段，范围条件合入其 query。带隔离策略的 `$search` / `$searchMeta` / `$vectorSearch` / `$documents` / `$collStats` / `$indexStats` 等特殊入口明确报错，使用原生扩展设计过滤；不会静默挪动阶段或取消隔离。
+
+订阅权限支持 `$and` / `$or` / `$nor` 的递归路径转换；`$expr` 等不能安全自动转换的权限语法直接报错。订阅仍只观察符合 fullDocument 范围的可见记录；删除事件方案见前文。
+
+新增选项：
+
+| 位置 | 属性 | 说明 |
+| --- | --- | --- |
+| find / aggregate | options.collation | Collation 文档，locale 必填，未知属性报错 |
+| find / aggregate / bulkWrite | options.let | 命令变量文档 |
+| count | options.collation / hint / comment | 使用 CountDocuments 对应选项 |
+| bulkWrite 模型 | collation | update/replace/delete 模型的字符串比较规则 |
+| bulkWrite 模型 | sort | updateOne/replaceOne 的目标选择顺序，要求支持该功能的服务端版本 |
+| watch | options.collation / showExpandedEvents | 比较规则与扩展事件；具体事件受服务端能力约束 |
+
+## 高级官方能力的接入边界
+
+原生回调运行在 DAL 选择的数据源上；通过 Repository.WithDAL 调用可继承事务绑定。写入集合必须如实列入 writes，回调部分失败也会失效缓存。原生回调不自动改写租户、审计或敏感字段，应在业务扩展中封装授权入口。
+
+| 官方能力 | 接入方式 | 需要业务维护 |
+| --- | --- | --- |
+| TimeSeries / Clustered / View | `migration.Run` 的原生 Database 回调 | 存储设计、TTL、索引与版本兼容；不通过普通 schema.Apply 改造现有集合 |
+| GridFS | `DALNative` 中的 `db.GridFSBucket(...)` | 文件授权、Metadata 租户字段，声明 bucket.files / bucket.chunks 写入范围 |
+| 数据库 / Client 级订阅 | `db.Watch` / `db.Client().Watch` | 命名空间白名单、租户可见性、ResumeToken 持久化和消费幂等；不在事务中打开 |
+| 跨命名空间批量 | `db.Client().BulkWrite` | 服务端版本支持（MongoDB 8.0+）、每个模型权限、部分成功、全部目标库缓存 |
+| Search / VectorSearch 索引 | `Collection.SearchIndexes()` | 部署能力、索引生命周期及查询范围过滤 |
+| 官方其他选项 | 在原生回调中构造 options Builder | 读写关注、读偏好、原生执行计划以及超时 Context |
+
+例如 GridFS 文件仓储可在已完成业务授权后使用：
+
+```go
+err := repo.WithDAL(ctx, dal, func(queryCtx context.Context) error {
+    return mongoplus.DALNative(queryCtx, []string{"assets.files", "assets.chunks"},
+        func(nativeCtx context.Context, db *mongo.Database) error {
+            bucket := db.GridFSBucket(options.GridFSBucket().SetName("assets"))
+            _, err := bucket.UploadFromStream(nativeCtx, filename, reader,
+                options.GridFSUpload().SetMetadata(bson.D{
+                    {Key: "company_id", Value: companyID},
+                }))
+            return err
+        },
+    )
+})
+```
+
+GridFS 写入不支持多文档事务，以上普通调用不传事务 Context。下载或删除前须校验文件 Metadata，不能只凭客户端传来的 fileID 授权。
+
+
+删除方式与查询范围是两个独立授权：不要用 DALUnscoped 隐式执行硬删除。原生 DALNative 仍由业务负责选择删除方式与范围，库不会解析回调内容。

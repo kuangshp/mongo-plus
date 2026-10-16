@@ -17,7 +17,7 @@ import (
 )
 
 // DAL 把查询放在 JSON 文件中，调用方式和 gorm-plus 的 SQL 文件查询对应。
-// 文件描述集合、操作和 BSON，不解析 SQL。租户和逻辑删除需要写在文件里。
+// 文件描述集合、操作和 BSON，不解析 SQL。执行时会按数据库上的租户、数据权限和仓储逻辑删除追加顶层条件。$lookup 等子管道仍要自己写范围。
 type DAL struct {
 	provider dalProvider
 	loader   DALLoader
@@ -182,6 +182,9 @@ func (d *DAL) Preload(files ...string) error {
 }
 
 func resolveDAL(ctx context.Context) (*DAL, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("DAL 操作上下文不能为空")
+	}
 	if dal, ok := ctx.Value(dalContextKey{}).(*DAL); ok && dal != nil {
 		return dal, nil
 	}
@@ -474,12 +477,15 @@ func countFileName(file string) string {
 	return file[:slash+1] + "count_" + file[slash+1:]
 }
 
-func (d *DAL) run(ctx context.Context, file string, args []any, fn func() error) error {
+func (d *DAL) run(ctx context.Context, file string, args []any, fn func(context.Context) error) error {
+	if binding, ok := ctx.Value(dalDatabaseKey{}).(dalDatabaseBinding); !ok || binding.dal != d {
+		ctx = context.WithValue(ctx, dalDatabaseKey{}, dalDatabaseBinding{dal: d, selection: &dalDatabaseSelection{}})
+	}
 	for _, hook := range d.hooks {
 		hook.Before(ctx, file, args)
 	}
 	start := time.Now()
-	err := fn()
+	err := fn(ctx)
 	cost := time.Since(start)
 	for _, hook := range d.hooks {
 		hook.After(ctx, file, args, cost, err)

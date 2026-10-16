@@ -33,7 +33,10 @@ type SensitiveMaskConfig struct {
 	Replacement string
 }
 
-// SensitiveFieldConfig 描述一个敏感字段。明文建议使用 bson:"-"，密文和索引字段写入文档。
+// SensitiveFieldConfig 描述一个敏感字段，Go 字段名支持 Profile.Phone 等完整嵌套路径。
+// *Path 为完整 BSON 路径；省略时从实体派生，显式值必须与实体 BSON 标签一致。
+// EncryptAtRest=true 时明文必须配置 bson:"-"；其查询别名可以自定义。
+// 各敏感字段的明文、密文与索引路径不能重叠。
 type SensitiveFieldConfig struct {
 	PlainField    string
 	CipherField   string
@@ -106,7 +109,12 @@ func NewSensitivePlugin(cfg SensitiveConfig) (*SensitivePlugin, error) {
 	}
 	cfg.Fields = append([]SensitiveFieldConfig(nil), cfg.Fields...)
 	cfg.IndexKey = append([]byte(nil), cfg.IndexKey...)
-	plugin := &SensitivePlugin{cfg: cfg, aead: aead, byKey: map[string]SensitiveFieldConfig{}, explicitPaths: map[string][3]bool{}}
+	plugin := &SensitivePlugin{
+		cfg:           cfg,
+		aead:          aead,
+		byKey:         map[string]SensitiveFieldConfig{},
+		explicitPaths: map[string][3]bool{},
+	}
 	for i := range cfg.Fields {
 		item := cfg.Fields[i]
 		plugin.explicitPaths[item.PlainField] = [3]bool{item.PlainPath != "", item.CipherPath != "", item.IndexPath != ""}
@@ -126,13 +134,13 @@ func NewSensitivePlugin(cfg SensitiveConfig) (*SensitivePlugin, error) {
 			item.Mask.Prefix, item.Mask.Suffix = 3, 4
 		}
 		if item.PlainPath == "" {
-			item.PlainPath = toSnakeCase(item.PlainField)
+			item.PlainPath = sensitiveDefaultPath(item.PlainField)
 		}
 		if item.CipherPath == "" {
-			item.CipherPath = toSnakeCase(item.CipherField)
+			item.CipherPath = sensitiveDefaultPath(item.CipherField)
 		}
 		if item.IndexPath == "" {
-			item.IndexPath = toSnakeCase(item.IndexField)
+			item.IndexPath = sensitiveDefaultPath(item.IndexField)
 		}
 		cfg.Fields[i] = item
 		plugin.byKey[item.PlainField] = item
@@ -144,7 +152,7 @@ func NewSensitivePlugin(cfg SensitiveConfig) (*SensitivePlugin, error) {
 	return plugin, nil
 }
 
-// PhoneField 返回手机号的默认字段名、盲索引和脱敏规则。
+// PhoneField 返回手机号的默认字段名、盲索引和脱敏规则，name 可传 Profile.Phone。
 func PhoneField(name string) SensitiveFieldConfig {
 	return SensitiveFieldConfig{
 		PlainField:  name,
@@ -181,7 +189,7 @@ func (p *SensitivePlugin) Eq(logical, value string) Condition {
 		item.Normalize = strings.TrimSpace
 	}
 	if item.IndexPath == "" {
-		item.IndexPath = toSnakeCase(item.IndexField)
+		item.IndexPath = sensitiveDefaultPath(item.IndexField)
 	}
 	return field.New[string](item.IndexPath).Eq(blindIndex(p.cfg.IndexKey, item.Normalize(value)))
 }
@@ -205,28 +213,39 @@ func (p *SensitivePlugin) IndexValue(logical, value string) string {
 
 func (p *SensitivePlugin) seal(value any) error {
 	return walkSensitive(reflect.ValueOf(value), func(item reflect.Value) error {
-		fields, err := p.fieldsForType(item.Type())
+		model := p.modelForType(item.Type())
+		err := model.err
 		if err != nil {
 			return err
 		}
-		for _, fieldCfg := range fields {
-			plain, ok := sensitiveString(item, fieldCfg.PlainField)
-			if !ok || plain == "" {
-				continue
-			}
-			plain = fieldCfg.Normalize(plain)
-			stored := plain
-			if fieldCfg.EncryptAtRest {
-				var err error
-				stored, err = p.encrypt(plain)
-				if err != nil {
+		if err := p.checkSensitiveDynamic(item, model, 0); err != nil {
+			return err
+		}
+		for _, binding := range model.bindings {
+			fieldCfg := binding.field
+			err := visitSensitiveOwners(item, binding.owner, func(owner reflect.Value) error {
+				plain, ok := sensitiveStringAt(owner, binding.plain)
+				if !ok || plain == "" {
+					return nil
+				}
+				plain = fieldCfg.Normalize(plain)
+				stored := plain
+				if fieldCfg.EncryptAtRest {
+					var err error
+					stored, err = p.encrypt(plain)
+					if err != nil {
+						return err
+					}
+				}
+				if err := setSensitiveStringAt(owner, binding.cipher, stored); err != nil {
 					return err
 				}
-			}
-			if err := setSensitiveString(item, fieldCfg.CipherField, stored); err != nil {
-				return err
-			}
-			if err := setSensitiveString(item, fieldCfg.IndexField, blindIndex(p.cfg.IndexKey, plain)); err != nil {
+				if err := setSensitiveStringAt(owner, binding.index, blindIndex(p.cfg.IndexKey, plain)); err != nil {
+					return err
+				}
+				return nil
+			})
+			if err != nil {
 				return err
 			}
 		}
@@ -236,38 +255,49 @@ func (p *SensitivePlugin) seal(value any) error {
 
 func (p *SensitivePlugin) reveal(ctx context.Context, value any) error {
 	return walkSensitive(reflect.ValueOf(value), func(item reflect.Value) error {
-		fields, err := p.fieldsForType(item.Type())
+		model := p.modelForType(item.Type())
+		err := model.err
 		if err != nil {
 			return err
 		}
-		for _, fieldCfg := range fields {
-			stored, ok := sensitiveString(item, fieldCfg.CipherField)
-			if !ok || stored == "" {
-				continue
-			}
-			mode := fieldCfg.ReturnMode
-			if fieldCfg.ReturnModeResolver != nil {
-				mode = fieldCfg.ReturnModeResolver(ctx)
-			}
-			if contextMode, ok := ctx.Value(sensitiveModeKey{}).(SensitiveReturnMode); ok {
-				mode = contextMode
-			}
-			output := stored
-			if mode != SensitiveReturnCipher {
-				plain := stored
-				if fieldCfg.EncryptAtRest {
-					var err error
-					plain, err = p.decrypt(stored)
-					if err != nil {
-						return err
+		if err := p.checkSensitiveDynamic(item, model, 0); err != nil {
+			return err
+		}
+		for _, binding := range model.bindings {
+			fieldCfg := binding.field
+			err := visitSensitiveOwners(item, binding.owner, func(owner reflect.Value) error {
+				stored, ok := sensitiveStringAt(owner, binding.cipher)
+				if !ok || stored == "" {
+					return nil
+				}
+				mode := fieldCfg.ReturnMode
+				if fieldCfg.ReturnModeResolver != nil {
+					mode = fieldCfg.ReturnModeResolver(ctx)
+				}
+				if contextMode, ok := ctx.Value(sensitiveModeKey{}).(SensitiveReturnMode); ok {
+					mode = contextMode
+				}
+				output := stored
+				if mode != SensitiveReturnCipher {
+					plain := stored
+					if fieldCfg.EncryptAtRest {
+						var err error
+						plain, err = p.decrypt(stored)
+						if err != nil {
+							return err
+						}
+					}
+					output = plain
+					if mode == SensitiveReturnMasked {
+						output = maskSensitive(plain, fieldCfg.Mask)
 					}
 				}
-				output = plain
-				if mode == SensitiveReturnMasked {
-					output = maskSensitive(plain, fieldCfg.Mask)
+				if err := setSensitiveStringAt(owner, binding.plain, output); err != nil {
+					return err
 				}
-			}
-			if err := setSensitiveString(item, fieldCfg.PlainField, output); err != nil {
+				return nil
+			})
+			if err != nil {
 				return err
 			}
 		}
@@ -279,35 +309,43 @@ func (p *SensitivePlugin) rewrite(ops []field.UpdateOp, entityTypes ...reflect.T
 	if p == nil {
 		return ops, nil
 	}
-	fields := p.cfg.Fields
-	if len(entityTypes) > 0 {
-		var err error
-		fields, err = p.fieldsForType(entityTypes[0])
-		if err != nil {
-			return nil, err
-		}
+	bindings := make([]sensitiveBinding, 0, len(p.cfg.Fields))
+	for _, cfg := range p.cfg.Fields {
+		bindings = append(bindings, sensitiveBinding{
+			field:         cfg,
+			plainPattern:  strings.Split(cfg.PlainPath, "."),
+			goPattern:     strings.Split(cfg.PlainField, "."),
+			cipherPattern: strings.Split(cfg.CipherPath, "."),
+			indexPattern:  strings.Split(cfg.IndexPath, "."),
+		})
 	}
-	byPath := map[string]SensitiveFieldConfig{}
-	for _, item := range fields {
-		byPath[item.PlainPath] = item
-		byPath[item.PlainField] = item
+	if len(entityTypes) > 0 {
+		model := p.modelForType(entityTypes[0])
+		if model.err != nil {
+			return nil, model.err
+		}
+		bindings = model.bindings
 	}
 	rewritten := make([]field.UpdateOp, 0, len(ops))
 	for _, op := range ops {
-		item, ok := byPath[op.Path]
-		if !ok {
-			for path := range byPath {
-				if strings.HasPrefix(op.Path, path+".") || strings.HasPrefix(path, op.Path+".") {
-					return nil, fmt.Errorf("敏感字段 %s 不支持父子路径更新", path)
-				}
+		binding, indexes, found, err := sensitiveUpdateBinding(bindings, op.Path)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			if err := p.rejectDynamicSensitive(reflect.ValueOf(op.Value), 0); err != nil {
+				return nil, err
 			}
 			rewritten = append(rewritten, op)
 			continue
 		}
+		item := binding.field
+		cipherPath := fillSensitivePattern(binding.cipherPattern, indexes)
+		indexPath := fillSensitivePattern(binding.indexPattern, indexes)
 		if op.Operator == "$unset" {
 			rewritten = append(rewritten,
-				field.UpdateOp{Operator: "$unset", Path: item.CipherPath, Value: ""},
-				field.UpdateOp{Operator: "$unset", Path: item.IndexPath, Value: ""})
+				field.UpdateOp{Operator: "$unset", Path: cipherPath, Value: ""},
+				field.UpdateOp{Operator: "$unset", Path: indexPath, Value: ""})
 			continue
 		}
 		if op.Operator != "$set" && op.Operator != "$setOnInsert" {
@@ -327,100 +365,15 @@ func (p *SensitivePlugin) rewrite(ops []field.UpdateOp, entityTypes ...reflect.T
 			}
 		}
 		rewritten = append(rewritten,
-			field.UpdateOp{Operator: op.Operator, Path: item.CipherPath, Value: stored},
-			field.UpdateOp{Operator: op.Operator, Path: item.IndexPath, Value: blindIndex(p.cfg.IndexKey, text)},
+			field.UpdateOp{Operator: op.Operator, Path: cipherPath, Value: stored},
+			field.UpdateOp{Operator: op.Operator, Path: indexPath, Value: blindIndex(p.cfg.IndexKey, text)},
 		)
 	}
 	return rewritten, nil
 }
 
-type sensitiveMetadata struct {
-	fields []SensitiveFieldConfig
-	err    error
-}
-
-// 新增、更新和查询共用此解析结果；缓存按 Go 实体类型隔离，显式配置优先于标签。
-func (p *SensitivePlugin) fieldsForType(typ reflect.Type) ([]SensitiveFieldConfig, error) {
-	for typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	if cached, ok := p.metadata.Load(typ); ok {
-		meta := cached.(sensitiveMetadata)
-		return meta.fields, meta.err
-	}
-	fields, err := p.resolveFields(typ)
-	meta, _ := p.metadata.LoadOrStore(typ, sensitiveMetadata{fields: fields, err: err})
-	result := meta.(sensitiveMetadata)
-	return result.fields, result.err
-}
-
-func (p *SensitivePlugin) resolveFields(typ reflect.Type) ([]SensitiveFieldConfig, error) {
-	fields := append([]SensitiveFieldConfig(nil), p.cfg.Fields...)
-	if typ.Kind() != reflect.Struct {
-		return fields, nil
-	}
-	seen := map[string]bool{}
-	for i, item := range fields {
-		seen[item.PlainField] = true
-		paths := p.explicitPaths[item.PlainField]
-		if f, ok := typ.FieldByName(item.PlainField); ok && !paths[0] {
-			fields[i].PlainPath = bsonName(f)
-		}
-		if f, ok := typ.FieldByName(item.CipherField); ok && !paths[1] {
-			fields[i].CipherPath = storedSensitivePath(f)
-		}
-		if f, ok := typ.FieldByName(item.IndexField); ok && !paths[2] {
-			fields[i].IndexPath = storedSensitivePath(f)
-		}
-	}
-	for _, structField := range reflect.VisibleFields(typ) {
-		if seen[structField.Name] {
-			continue
-		}
-		tag := structField.Tag.Get("mongoplus")
-		if tag == "" {
-			tag = structField.Tag.Get("gormplus")
-		}
-		options := sensitiveTag(tag)
-		if options["cipher"] == "" && options["index"] == "" {
-			continue
-		}
-		if options["cipher"] == "" || options["index"] == "" {
-			return nil, fmt.Errorf("敏感字段 %s 必须同时配置 cipher 和 index", structField.Name)
-		}
-		item := PhoneField(structField.Name)
-		item.CipherField, item.IndexField = options["cipher"], options["index"]
-		item.EncryptAtRest = strings.EqualFold(options["encrypt"], "true")
-		item.PlainPath = bsonName(structField)
-		cipherField, cipherOK := typ.FieldByName(item.CipherField)
-		indexField, indexOK := typ.FieldByName(item.IndexField)
-		if structField.PkgPath != "" || structField.Type.Kind() != reflect.String ||
-			!cipherOK || !indexOK || cipherField.PkgPath != "" || indexField.PkgPath != "" ||
-			cipherField.Type.Kind() != reflect.String || indexField.Type.Kind() != reflect.String {
-			return nil, fmt.Errorf("敏感字段 %s 的明文、密文和索引必须是可导出的 string 字段", structField.Name)
-		}
-		if strings.Split(cipherField.Tag.Get("bson"), ",")[0] == "-" ||
-			strings.Split(indexField.Tag.Get("bson"), ",")[0] == "-" {
-			return nil, fmt.Errorf("敏感字段 %s 的密文和索引不能配置 bson:\"-\"", structField.Name)
-		}
-		item.CipherPath, item.IndexPath = storedSensitivePath(cipherField), storedSensitivePath(indexField)
-		if item.CipherPath == item.IndexPath || item.PlainPath == item.CipherPath || item.PlainPath == item.IndexPath {
-			return nil, fmt.Errorf("敏感字段 %s 的明文、密文和索引路径不能相同", structField.Name)
-		}
-		fields = append(fields, item)
-	}
-	return fields, nil
-}
-
-func storedSensitivePath(f reflect.StructField) string {
-	if name := strings.Split(f.Tag.Get("bson"), ",")[0]; name != "" {
-		return name
-	}
-	// MongoDB 驱动未指定 BSON 标签时使用 Go 字段名的小写形式。
-	return strings.ToLower(f.Name)
-}
-
 // SensitiveEq 按当前仓储实体的配置或标签生成盲索引等值条件，支持自定义 BSON 字段名。
+// 嵌套字段推荐完整 Go/BSON 路径；数组条件匹配任一元素，短名称有歧义时返回错误。
 // 无插件、未声明字段或无效标签都会生成带错误的条件，查询会在发送到数据库前失败。
 func (r *Repository[T, K]) SensitiveEq(logical, value string) Condition {
 	if r == nil || r.db == nil || r.db.sensitive == nil {
@@ -431,10 +384,12 @@ func (r *Repository[T, K]) SensitiveEq(logical, value string) Condition {
 	if err != nil {
 		return Condition{Err: err}
 	}
-	for _, item := range fields {
-		if logical == item.PlainField || logical == item.PlainPath || logical == item.IndexField || logical == item.IndexPath {
-			return field.New[string](item.IndexPath).Eq(blindIndex(p.cfg.IndexKey, item.Normalize(value)))
-		}
+	item, found, err := findSensitiveField(fields, logical)
+	if err != nil {
+		return Condition{Err: err}
+	}
+	if found {
+		return field.New[string](item.IndexPath).Eq(blindIndex(p.cfg.IndexKey, item.Normalize(value)))
 	}
 	return Condition{Err: fmt.Errorf("实体未声明敏感字段 %s", logical)}
 }
@@ -508,14 +463,6 @@ func sensitiveTag(tag string) map[string]string {
 	return options
 }
 
-func bsonName(field reflect.StructField) string {
-	name := strings.Split(field.Tag.Get("bson"), ",")[0]
-	if name == "" || name == "-" {
-		return toSnakeCase(field.Name)
-	}
-	return name
-}
-
 func walkSensitive(value reflect.Value, fn func(reflect.Value) error) error {
 	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
 		if value.IsNil() {
@@ -533,22 +480,5 @@ func walkSensitive(value reflect.Value, fn func(reflect.Value) error) error {
 			}
 		}
 	}
-	return nil
-}
-
-func sensitiveString(value reflect.Value, name string) (string, bool) {
-	field := value.FieldByName(name)
-	if !field.IsValid() || field.Kind() != reflect.String {
-		return "", false
-	}
-	return field.String(), true
-}
-
-func setSensitiveString(value reflect.Value, name, content string) error {
-	field := value.FieldByName(name)
-	if !field.IsValid() || field.Kind() != reflect.String || !field.CanSet() {
-		return fmt.Errorf("敏感字段 %s 不存在、不是 string 或不可写", name)
-	}
-	field.SetString(content)
 	return nil
 }

@@ -61,7 +61,64 @@ func NewRepository[T any, K ID](db *Database, c CollectionConfig) (*Repository[T
 			reserved[path] = true
 		}
 	}
+	if err := db.RegisterCollections(c); err != nil {
+		return nil, err
+	}
 	return &Repository[T, K]{db: db, collection: db.native.Collection(c.Name), config: c}, nil
+}
+
+// RegisterCollections 在启动时显式注册集合规则，DAL 不再依赖首次构造仓储的时机。
+// 同名规则必须完全相同；一次调用整体校验通过后才发布，不允许后注册覆盖权限语义。
+func (d *Database) RegisterCollections(configs ...CollectionConfig) error {
+	if d == nil {
+		return fmt.Errorf("数据库不能为空")
+	}
+	d.rulesMu.Lock()
+	defer d.rulesMu.Unlock()
+	pending := map[string]collectionPolicy{}
+	for _, c := range configs {
+		if !validDALCollection(c.Name) {
+			return fmt.Errorf("无效集合名称 %q", c.Name)
+		}
+		id, err := c.ID.Normalize()
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		reserved := map[string]bool{"_id": true, "deleted_at": true, "created_at": true, "updated_at": true}
+		for _, path := range []string{c.TenantField, c.CreatedByField, c.UpdatedByField} {
+			if path != "" && (!field.ValidPath(path) || strings.Contains(path, ".") || reserved[path]) {
+				return fmt.Errorf("无效保留字段配置 %q", path)
+			}
+			if path != "" {
+				reserved[path] = true
+			}
+		}
+		rule := collectionPolicy{config: c, softDelete: c.SoftDelete, timestamps: c.Timestamps, tenantField: c.TenantField}
+		if old, ok := d.rules[c.Name]; ok && old.config != c {
+			return fmt.Errorf("集合 %s 的规则与已注册配置冲突", c.Name)
+		}
+		if old, ok := pending[c.Name]; ok && old.config != c {
+			return fmt.Errorf("集合 %s 的规则重复且不一致", c.Name)
+		}
+		pending[c.Name] = rule
+	}
+	if d.rules == nil {
+		d.rules = map[string]collectionPolicy{}
+	}
+	for name, rule := range pending {
+		d.rules[name] = rule
+	}
+	return nil
+}
+
+func (d *Database) collectionPolicyFor(name string) collectionPolicy {
+	if d == nil {
+		return collectionPolicy{}
+	}
+	d.rulesMu.Lock()
+	defer d.rulesMu.Unlock()
+	return d.rules[name]
 }
 
 // MustRepository 供经过 schema 校验的生成构造函数使用，配置错误在启动时暴露。
@@ -174,7 +231,7 @@ func (r *Repository[T, K]) tenantFilters(ctx context.Context) ([]Condition, erro
 	if value == nil || reflect.ValueOf(value).IsZero() {
 		return nil, ErrTenantRequired
 	}
-	return []Condition{field.New[any](r.config.TenantField).Eq(value)}, nil
+	return []Condition{plugin.TenantCondition(r.config.TenantField, value)}, nil
 }
 
 func idOption[K ID](id K) QueryOption { return Query().Where(field.New[K]("_id").Eq(id)).Build() }
@@ -211,7 +268,27 @@ func (r *Repository[T, K]) findOne(ctx context.Context, opts ...QueryOption) (en
 	if err != nil {
 		return nil, err
 	}
+	if len(o.let) > 0 || o.batchSize > 0 || o.allowDiskUse != nil {
+		o.limit = 1
+		list, err := r.findList(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		if len(list) == 0 {
+			return nil, ErrNotFound
+		}
+		return list[0], nil
+	}
 	find := options.FindOne().SetSkip(o.skip)
+	if o.collation != nil {
+		find.SetCollation(o.collation)
+	}
+	if o.hint != nil {
+		find.SetHint(o.hint)
+	}
+	if o.comment != nil {
+		find.SetComment(o.comment)
+	}
 	if len(o.sort) > 0 {
 		find.SetSort(o.sort)
 	}
@@ -236,6 +313,7 @@ func (r *Repository[T, K]) findList(ctx context.Context, opts ...QueryOption) (e
 		return nil, err
 	}
 	find := options.Find().SetSkip(o.skip)
+	applyFindOptions(find, o)
 	if o.limit > 0 {
 		find.SetLimit(o.limit)
 	}
@@ -257,17 +335,24 @@ func (r *Repository[T, K]) findList(ctx context.Context, opts ...QueryOption) (e
 
 // Walk 按批次读取文档，避免将整个集合载入内存；回调错误会停止读取。
 func (r *Repository[T, K]) Walk(ctx context.Context, fn func(*T) error, opts ...QueryOption) error {
+	if fn == nil {
+		return fmt.Errorf("Walk 回调不能为空")
+	}
 	ctx, cleanup, err := r.operationContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	o := mergeOptions(opts)
+	if o.cacheTTL > 0 || o.singleFlight {
+		return fmt.Errorf("Walk 流式查询不支持缓存或请求合并")
+	}
 	filter, err := r.filter(ctx, o, false)
 	if err != nil {
 		return err
 	}
 	find := options.Find().SetBatchSize(100).SetSkip(o.skip)
+	applyFindOptions(find, o)
 	if o.limit > 0 {
 		find.SetLimit(o.limit)
 	}
@@ -299,21 +384,33 @@ func (r *Repository[T, K]) Walk(ctx context.Context, fn func(*T) error, opts ...
 
 // Count 按相同的租户与逻辑删除规则统计；忽略列表的 Limit、Offset。
 func (r *Repository[T, K]) count(ctx context.Context, opts ...QueryOption) (int64, error) {
-	filter, err := r.filter(ctx, mergeOptions(opts), false)
+	o := mergeOptions(opts)
+	filter, err := r.filter(ctx, o, false)
 	if err != nil {
 		return 0, err
 	}
-	return r.collection.CountDocuments(ctx, filter)
+	count := options.Count()
+	if o.collation != nil {
+		count.SetCollation(o.collation)
+	}
+	if o.hint != nil {
+		count.SetHint(o.hint)
+	}
+	if o.comment != nil {
+		count.SetComment(o.comment)
+	}
+	if len(o.let) > 0 {
+		return 0, fmt.Errorf("CountDocuments 不支持 Let")
+	}
+	return r.collection.CountDocuments(ctx, filter, count)
 }
 
 // Exists 判断是否存在，避免为存在性检查计算整个集合数量。
 func (r *Repository[T, K]) exists(ctx context.Context, opts ...QueryOption) (bool, error) {
-	filter, err := r.filter(ctx, mergeOptions(opts), false)
-	if err != nil {
-		return false, err
-	}
-	err = r.collection.FindOne(ctx, filter, options.FindOne().SetProjection(bson.D{{Key: "_id", Value: 1}})).Err()
-	if err == mongo.ErrNoDocuments {
+	o := mergeOptions(opts)
+	o.projection = bson.D{{Key: "_id", Value: 1}}
+	_, err := r.findOne(ctx, o)
+	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
 	return err == nil, err
@@ -322,6 +419,11 @@ func (r *Repository[T, K]) exists(ctx context.Context, opts ...QueryOption) (boo
 // FindPage 返回页码分页和精确总数；两次查询默认不保证来自同一快照。
 func (r *Repository[T, K]) FindPage(ctx context.Context, page, size int64, opts ...QueryOption) ([]*T, int64, error) {
 	o := mergeOptions(opts)
+	var err error
+	o, err = stableIDPageOption(o, r.config.ID.Type)
+	if err != nil {
+		return nil, 0, err
+	}
 	offset, limit := DbPage(page, size)
 	o.skip = offset
 	o.limit = limit
@@ -355,6 +457,13 @@ func (r *Repository[T, K]) FindCursorPage(ctx context.Context, after *K, size in
 	if len(o.sort) > 0 || o.skip != 0 || len(o.projection) > 0 {
 		return CursorPage[T, K]{}, fmt.Errorf("ID 游标分页不支持自定义排序、Offset 或投影")
 	}
+	// 字符串主键必须使用二进制全序；显式设置也覆盖集合默认 Collation。
+	// 非 simple 规则会使 A/a 等不同主键比较相等，导致严格大于游标跳过记录。
+	var err error
+	o, err = stableIDPageOption(o, r.config.ID.Type)
+	if err != nil {
+		return CursorPage[T, K]{}, err
+	}
 	_, size = DbPage(1, size)
 	o.limit = size + 1
 	o.sort = bson.D{{Key: "_id", Value: 1}}
@@ -375,4 +484,36 @@ func (r *Repository[T, K]) FindCursorPage(ctx context.Context, after *K, size in
 		result.Next = &id
 	}
 	return result, nil
+}
+
+// 所有依赖 _id 保证稳定顺序的分页入口共用该约束，避免只修游标而遗漏页码/关联分页。
+func stableIDPageOption(o QueryOption, idType IDType) (QueryOption, error) {
+	if idType == IDTypeString {
+		if o.collation != nil && o.collation.Locale != "simple" {
+			return o, fmt.Errorf("字符串 ID 稳定分页仅支持 simple Collation；语言比较请使用独立数值/ObjectID 分页键或原生扩展")
+		}
+		o.collation = &options.Collation{Locale: "simple"}
+	}
+	return o, nil
+}
+
+func applyFindOptions(find *options.FindOptionsBuilder, o QueryOption) {
+	if o.collation != nil {
+		find.SetCollation(o.collation)
+	}
+	if o.hint != nil {
+		find.SetHint(o.hint)
+	}
+	if o.let != nil {
+		find.SetLet(o.let)
+	}
+	if o.comment != nil {
+		find.SetComment(o.comment)
+	}
+	if o.batchSize > 0 {
+		find.SetBatchSize(o.batchSize)
+	}
+	if o.allowDiskUse != nil {
+		find.SetAllowDiskUse(*o.allowDiskUse)
+	}
 }

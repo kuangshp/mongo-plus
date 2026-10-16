@@ -9,7 +9,6 @@ import (
 	"github.com/kuangshp/mongo-plus/field"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type joinStep struct {
@@ -334,6 +333,10 @@ func (q *Aggregation) buildBase(ctx context.Context, paged bool) (mongo.Pipeline
 }
 
 func lookupStage(ctx context.Context, source collectionSource, step joinStep, localPath, foreignPath string) (bson.D, error) {
+	if step.option.collation != nil || step.option.hint != nil || step.option.let != nil || step.option.comment != nil || step.option.batchSize != 0 || step.option.allowDiskUse != nil {
+		return nil, fmt.Errorf("Lookup 子查询不能单独设置命令选项，请设置在 From 的根查询中")
+	}
+
 	filter, err := source.filter(ctx, step.option, false)
 	if err != nil {
 		return nil, err
@@ -599,7 +602,7 @@ func (q *Aggregation) scan(ctx context.Context, dest any) (err error) {
 	if err != nil {
 		return err
 	}
-	cursor, err := q.source.collection.Aggregate(ctx, pipeline, options.Aggregate().SetAllowDiskUse(true))
+	cursor, err := q.source.collection.Aggregate(ctx, pipeline, aggregateDriverOptions(q.option))
 	if err != nil {
 		return err
 	}
@@ -619,6 +622,23 @@ type aggregatePageCount struct {
 }
 
 func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64) (total int64, err error) {
+	if q != nil {
+		copy := *q
+		q = &copy
+		q.option, err = stableIDPageOption(q.option, q.source.config.ID.Type)
+		if err != nil {
+			return 0, err
+		}
+		for _, step := range q.steps {
+			if step.source != nil && step.mode != "array" {
+				source := getSource(step.source)
+				q.option, err = stableIDPageOption(q.option, source.config.ID.Type)
+				if err != nil {
+					return 0, err
+				}
+			}
+		}
+	}
 	ctx, cleanup, err := q.operationContext(ctx)
 	if err != nil {
 		return 0, err
@@ -641,7 +661,7 @@ func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64
 		return 0, err
 	}
 	list := q.finalStages(append(mongo.Pipeline(nil), base...), sort, offset, limit)
-	cursor, err := q.source.collection.Aggregate(ctx, list, options.Aggregate().SetAllowDiskUse(true))
+	cursor, err := q.source.collection.Aggregate(ctx, list, aggregateDriverOptions(q.option))
 	if err != nil {
 		return 0, err
 	}
@@ -663,7 +683,7 @@ func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64
 
 func (q *Aggregation) countRows(ctx context.Context, base mongo.Pipeline) (int64, error) {
 	pipeline := append(append(mongo.Pipeline(nil), base...), bson.D{{Key: "$count", Value: "value"}})
-	cursor, err := q.source.collection.Aggregate(ctx, pipeline, options.Aggregate().SetAllowDiskUse(true))
+	cursor, err := q.source.collection.Aggregate(ctx, pipeline, aggregateDriverOptions(q.option))
 	if err != nil {
 		return 0, err
 	}

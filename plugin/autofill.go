@@ -124,6 +124,13 @@ func (p *AutoFillPlugin) assignments(ctx context.Context, create bool) []Assignm
 
 func bsonPath(name string) string {
 	name = strings.TrimSpace(name)
+	if strings.Contains(name, ".") {
+		parts := strings.Split(name, ".")
+		for i, part := range parts {
+			parts[i] = bsonPath(part)
+		}
+		return strings.Join(parts, ".")
+	}
 	if name == "" || strings.Contains(name, "_") || name == strings.ToLower(name) {
 		return name
 	}

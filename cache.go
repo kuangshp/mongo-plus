@@ -196,7 +196,7 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 func (r *Repository[T, K]) readKey(ctx context.Context, opts []QueryOption) (QueryOption, bson.D, error) {
 	o := mergeOptions(opts)
 	filter, err := r.filter(ctx, o, false)
-	return o, bson.D{{Key: "filter", Value: filter}, {Key: "sort", Value: o.sort}, {Key: "projection", Value: o.projection}, {Key: "limit", Value: o.limit}, {Key: "offset", Value: o.skip}}, err
+	return o, bson.D{{Key: "filter", Value: filter}, {Key: "sort", Value: o.sort}, {Key: "projection", Value: o.projection}, {Key: "limit", Value: o.limit}, {Key: "offset", Value: o.skip}, {Key: "collation", Value: o.collation}, {Key: "let", Value: o.let}, {Key: "hint", Value: o.hint}}, err
 }
 
 // FindOne 获取单条记录，可通过 WithCache 或 WithSingleFlight 显式启用本机读优化。

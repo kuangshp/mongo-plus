@@ -9,6 +9,7 @@ import (
 	"github.com/kuangshp/mongo-plus/field"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // UpdateById 显式更新指定字段，零值同样生效；不会修改主键、租户或创建时间。
@@ -48,42 +49,23 @@ func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops [
 	defer cleanup()
 	end := r.observe(ctx, "Update")
 	defer func() { end(err) }()
-	filter, err := r.filter(ctx, mergeOptions(opts), true)
+	o := mergeOptions(opts)
+	if err = validateWriteQuery(o); err != nil {
+		return nil, err
+	}
+	filter, err := r.filter(ctx, o, true)
 	if err != nil {
 		return nil, err
 	}
-	protected := []string{"_id"}
-	if r.config.SoftDelete {
-		protected = append(protected, "deleted_at")
-	}
-	if r.config.Timestamps {
-		protected = append(protected, "created_at", "updated_at")
-	}
-	for _, p := range []string{r.config.TenantField, r.config.CreatedByField, r.config.UpdatedByField} {
-		if p != "" {
-			protected = append(protected, p)
-		}
-	}
-	protected = append(protected, r.tenantProtectedFields()...)
-	if r.db != nil && r.db.sensitive != nil {
-		ops, err = r.db.sensitive.rewrite(ops, reflect.TypeFor[T]())
-		if err != nil {
-			return nil, err
-		}
-	}
-	update, err := buildUpdate(ops, protected...)
-	if err != nil {
-		return nil, err
-	}
-	update, err = r.auditUpdate(ctx, update)
+	update, err := r.prepareUpdate(ctx, ops)
 	if err != nil {
 		return nil, err
 	}
 	defer r.invalidate(ctx)
 	if many {
-		result, err = r.collection.UpdateMany(ctx, filter, update)
+		result, err = r.collection.UpdateMany(ctx, filter, update, repositoryWriteOptions(options.UpdateMany(), o))
 	} else {
-		result, err = r.collection.UpdateOne(ctx, filter, update)
+		result, err = r.collection.UpdateOne(ctx, filter, update, repositoryWriteOptions(options.UpdateOne(), o))
 	}
 	if err == nil && (result == nil || !result.Acknowledged) {
 		err = ErrUnacknowledgedWrite
@@ -91,28 +73,73 @@ func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops [
 	return result, err
 }
 
+// 普通写入没有返回游标或单条领取语义；拒绝不适用的选项，避免无意扩大写入范围。
+func validateWriteQuery(o QueryOption) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
+	if len(o.sort) > 0 || len(o.projection) > 0 || o.skip != 0 || o.limit != 0 || o.cacheTTL != 0 || o.singleFlight || o.batchSize != 0 || o.allowDiskUse != nil {
+		return fmt.Errorf("普通更新/删除不支持排序、投影、分页、缓存或游标选项；单条排序写入请用原子接口")
+	}
+	return nil
+}
+
+// 四种驱动写入 Builder 使用相同选项，软删除也复用此处，防止某条路径遗漏透传。
+type repositoryWriteBuilder[B any] interface {
+	SetCollation(*options.Collation) B
+	SetHint(any) B
+	SetLet(any) B
+	SetComment(any) B
+}
+
+func repositoryWriteOptions[B repositoryWriteBuilder[B]](builder B, o QueryOption) B {
+	if o.collation != nil {
+		builder.SetCollation(o.collation)
+	}
+	if o.hint != nil {
+		builder.SetHint(o.hint)
+	}
+	if o.let != nil {
+		builder.SetLet(o.let)
+	}
+	if o.comment != nil {
+		builder.SetComment(o.comment)
+	}
+	return builder
+}
+
 func appendUpdate(update bson.D, op, path string, value any) bson.D {
 	for i, item := range update {
 		if item.Key == op {
-			update[i].Value = append(item.Value.(bson.D), bson.E{Key: path, Value: value})
+			fields := append(bson.D(nil), item.Value.(bson.D)...)
+			for j, e := range fields {
+				if e.Key == path {
+					fields[j].Value = value
+					update[i].Value = fields
+					return update
+				}
+			}
+			update[i].Value = append(fields, bson.E{Key: path, Value: value})
 			return update
 		}
 	}
 	return append(update, bson.E{Key: op, Value: bson.D{{Key: path, Value: value}}})
 }
 
+// auditUpdate 先改写所有自动填充字段，再统一检查最终路径，避免明文绕过敏感插件。
 func (r *Repository[T, K]) auditUpdate(ctx context.Context, update bson.D) (bson.D, error) {
+	ops := []UpdateOp{}
 	if r.config.Timestamps {
-		update = appendUpdate(update, "$set", "updated_at", time.Now().UTC())
+		ops = append(ops, UpdateOp{Operator: "$set", Path: "updated_at", Value: time.Now().UTC()})
 	}
 	filled := map[string]bool{}
 	if r.db != nil && r.db.autofill != nil {
 		for _, item := range r.db.autofill.OnUpdate(ctx) {
-			if err := r.checkTenantAssignment(item.Path); err != nil {
+			if err := r.checkAutoFillAssignment(item.Path); err != nil {
 				return nil, err
 			}
 			filled[item.Path] = true
-			update = appendUpdate(update, "$set", item.Path, item.Value)
+			ops = append(ops, UpdateOp{Operator: "$set", Path: item.Path, Value: item.Value})
 		}
 	}
 	if r.config.UpdatedByField != "" && !filled[r.config.UpdatedByField] {
@@ -120,9 +147,33 @@ func (r *Repository[T, K]) auditUpdate(ctx context.Context, update bson.D) (bson
 		if value == nil {
 			return nil, fmt.Errorf("缺少操作人信息")
 		}
-		update = appendUpdate(update, "$set", r.config.UpdatedByField, value)
+		ops = append(ops, UpdateOp{Operator: "$set", Path: r.config.UpdatedByField, Value: value})
 	}
-	return update, nil
+	if r.db != nil && r.db.sensitive != nil {
+		var err error
+		ops, err = r.db.sensitive.rewrite(ops, reflect.TypeFor[T]())
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, op := range ops {
+		update = appendUpdate(update, op.Operator, op.Path, op.Value)
+	}
+	final := []UpdateOp{}
+	for _, op := range update {
+		for _, item := range op.Value.(bson.D) {
+			final = append(final, UpdateOp{Operator: op.Key, Path: item.Key, Value: item.Value})
+		}
+	}
+	return buildUpdate(final)
+}
+
+func (r *Repository[T, K]) checkAutoFillAssignment(path string) error {
+	if err := r.checkTenantAssignment(path); err != nil {
+		return err
+	}
+	protected := []string{"_id", "deleted_at", "created_at", "updated_at"}
+	return guardDALPath(path, protected)
 }
 
 func (r *Repository[T, K]) tenantProtectedFields() []string {
@@ -217,7 +268,11 @@ func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many,
 	defer cleanup()
 	end := r.observe(ctx, "Delete")
 	defer func() { end(err) }()
-	filter, err := r.filter(ctx, mergeOptions(opts), true)
+	o := mergeOptions(opts)
+	if err = validateWriteQuery(o); err != nil {
+		return 0, err
+	}
+	filter, err := r.filter(ctx, o, true)
 	if err != nil {
 		return 0, err
 	}
@@ -229,9 +284,9 @@ func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many,
 		}
 		var result *mongo.UpdateResult
 		if many {
-			result, err = r.collection.UpdateMany(ctx, filter, update)
+			result, err = r.collection.UpdateMany(ctx, filter, update, repositoryWriteOptions(options.UpdateMany(), o))
 		} else {
-			result, err = r.collection.UpdateOne(ctx, filter, update)
+			result, err = r.collection.UpdateOne(ctx, filter, update, repositoryWriteOptions(options.UpdateOne(), o))
 		}
 		if err != nil {
 			return 0, err
@@ -243,9 +298,9 @@ func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many,
 	}
 	var result *mongo.DeleteResult
 	if many {
-		result, err = r.collection.DeleteMany(ctx, filter)
+		result, err = r.collection.DeleteMany(ctx, filter, repositoryWriteOptions(options.DeleteMany(), o))
 	} else {
-		result, err = r.collection.DeleteOne(ctx, filter)
+		result, err = r.collection.DeleteOne(ctx, filter, repositoryWriteOptions(options.DeleteOne(), o))
 	}
 	if err != nil {
 		return 0, err

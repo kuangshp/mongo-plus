@@ -126,8 +126,8 @@ func TestSensitiveExplicitFieldsWinAndDoNotMutateCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields, err := p.fieldsForType(reflect.TypeFor[customTagSensitiveEntity]())
-	if err != nil || len(fields) != 1 || fields[0].CipherPath != "override_cipher" || fields[0].IndexPath != "override_index" {
-		t.Fatalf("显式路径必须优先: %+v %v", fields, err)
+	if err == nil {
+		t.Fatalf("不能接受与实体 BSON 存储位置不一致的显式路径: %+v", fields)
 	}
 }
 

@@ -15,6 +15,13 @@ type defaultDepartmentRepository struct {
 }
 
 type iDefaultDepartmentRepository interface {
+	// MongoDB 原子复合操作及去重/估计统计。
+	FindOneAndUpdate(ctx context.Context, query mongoplus.QueryOption, modify mongoplus.ModifyOptions, updates ...mongoplus.UpdateOption) (*model.DepartmentEntity, error)
+	FindOneAndDelete(ctx context.Context, query mongoplus.QueryOption, opts ...mongoplus.DeleteOption) (*model.DepartmentEntity, error)
+	FindOneAndReplace(ctx context.Context, query mongoplus.QueryOption, replacement *model.DepartmentEntity, modify mongoplus.ModifyOptions) (*model.DepartmentEntity, error)
+	Distinct(ctx context.Context, path string, query ...mongoplus.QueryOption) ([]any, error)
+	EstimatedDocumentCount(ctx context.Context) (int64, error)
+
 	// SensitiveEq 按当前实体的显式配置或标签构造盲索引等值条件。
 	SensitiveEq(logical, value string) mongoplus.Condition
 	// WithTx 绑定本库事务回调的 txCtx，返回保留业务扩展的副本；必须使用返回值。
@@ -208,4 +215,24 @@ func newDefaultDepartmentRepository(db ...*mongoplus.Database) *defaultDepartmen
 			TenantField: "",   // 租户 BSON 字段；空字符串表示未配置集合级租户字段。
 		}),
 	}
+}
+
+func (r *defaultDepartmentRepository) FindOneAndUpdate(ctx context.Context, query mongoplus.QueryOption, modify mongoplus.ModifyOptions, updates ...mongoplus.UpdateOption) (*model.DepartmentEntity, error) {
+	return r.Repository.FindOneAndUpdate(ctx, query, modify, updates...)
+}
+
+func (r *defaultDepartmentRepository) FindOneAndDelete(ctx context.Context, query mongoplus.QueryOption, opts ...mongoplus.DeleteOption) (*model.DepartmentEntity, error) {
+	return r.Repository.FindOneAndDelete(ctx, query, opts...)
+}
+
+func (r *defaultDepartmentRepository) FindOneAndReplace(ctx context.Context, query mongoplus.QueryOption, replacement *model.DepartmentEntity, modify mongoplus.ModifyOptions) (*model.DepartmentEntity, error) {
+	return r.Repository.FindOneAndReplace(ctx, query, replacement, modify)
+}
+
+func (r *defaultDepartmentRepository) Distinct(ctx context.Context, path string, query ...mongoplus.QueryOption) ([]any, error) {
+	return r.Repository.Distinct(ctx, path, query...)
+}
+
+func (r *defaultDepartmentRepository) EstimatedDocumentCount(ctx context.Context) (int64, error) {
+	return r.Repository.EstimatedDocumentCount(ctx)
 }

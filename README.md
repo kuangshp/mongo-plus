@@ -282,13 +282,31 @@ JSON 定义由 `go run generator.go` 读取。配置了 MongoDB 数据源时，�
 | `indexes[].name` | string | 每个索引必填 | 索引名称，例如 `"idx_status_created_at"`；不能重复，也不能使用 MongoDB 保留的 `_id_`。 |
 | `indexes[].fields` | array of object | 每个索引必填且非空 | 有序的索引字段列表。复合索引顺序有意义，不能改写为无序对象。 |
 | `indexes[].fields[].name` | string | 每个索引字段必填 | 已定义字段的 BSON 路径，例如 `"status"`、`"address.city"`；也可以引用已启用的 `_id`、时间、逻辑删除和租户字段。 |
-| `indexes[].fields[].order` | integer | 每个索引字段必填 | `1` 为升序，`-1` 为降序；省略会得到无效的 `0`，不能自动补成升序。 |
+| `indexes[].fields[].order` | integer / string | 每个索引字段必填 | `1` / `-1`，或 `text`、`hashed`、`2d`、`2dsphere`；通配符索引使用字段名 `$**` 或 `对象.$**`，order 为 `1`。 |
 | `indexes[].unique` | boolean | 可选；默认 `false` | 是否为唯一索引；和多个索引字段组合时表示复合唯一约束。 |
 | `indexes[].sparse` | boolean | 可选；默认 `false` | 是否创建 MongoDB 稀疏索引；不能与 `activeOnly: true` 同时使用。 |
 | `indexes[].activeOnly` | boolean | 可选；默认 `false` | 仅索引未逻辑删除的文档；要求当前实体启用逻辑删除，可用于未删除记录的唯一约束。 |
 | `indexes[].expireAfterSeconds` | integer | 可选；省略时不是 TTL 索引 | TTL 过期秒数，范围 `0`～`2147483647`。仅支持一个 `datetime` 索引字段；`0` 表示按字段存储的时间点过期，TTL 执行物理删除。 |
 
-属性名按表中的 JSON 写法填写。未知属性、重复 JSON 键、重复字段以及与自动字段冲突的定义会报错。以上是本库的实体定义格式，不是直接传给 MongoDB 的原生 `$jsonSchema`；不要添加未支持的 `default`、`minLength` 等属性。
+| `fields[].rules` | object | 可选 | 附加 JSON Schema 约束，支持 `enum`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`multipleOf`、`minLength`、`maxLength`、`pattern`、`minItems`、`maxItems`、`uniqueItems`、`minProperties`、`maxProperties`、`description`。不能覆盖推导的类型/对象结构；数组规则作用于数组本身。 |
+| `indexes[].partialFilterExpression` | object | 可选 | 原生部分索引过滤；与 activeOnly、sparse 互斥。 |
+| `indexes[].collation` | object | 可选 | 官方 Collation 属性；未设置时继承集合 Collation。文本/hashed 索引按服务端规则使用 `{"locale":"simple"}`。 |
+| `indexes[].hidden` | boolean | 默认 false | 隐藏索引不参与查询计划选择；发生差异时 Plan 要求显式迁移。 |
+| `indexes[].weights` | object | 可选 | 文本字段权重，如 `{"title":2}`。 |
+| `indexes[].defaultLanguage` | string | 文本索引默认 english | 文本分词语言。 |
+| `indexes[].languageOverride` | string | 文本索引默认 language | 文档中的语言覆盖字段名。 |
+| `options` | object | 可选 | 普通集合的存储与校验选项。 |
+| `options.collation` | object | 可选 | 集合默认排序规则；创建后变更需显式迁移。 |
+| `options.capped` | boolean | 默认 false | 是否为固定容量集合。 |
+| `options.sizeInBytes` | integer | capped 时必填正值 | 固定容量字节数；建议按服务端分配粒度对齐。 |
+| `options.maxDocuments` | integer | 可选；默认不限制 | capped 集合的文档数量上限。 |
+| `options.changeStreamPreAndPostImages` | boolean | 可选 | 开启变更前后镜像；受服务端和集合类型限制，变更使用迁移。 |
+| `options.validationLevel` | string | 默认 strict | strict / moderate / off。 |
+| `options.validationAction` | string | 默认 error | error / warn。 |
+
+Collation 支持 `locale`、`caseLevel`、`caseFirst`、`strength`、`numericOrdering`、`alternate`、`maxVariable`、`normalization`、`backwards`；`locale` 必填，其他省略时使用官方默认值。规则和索引组合还会受到 MongoDB 服务端版本校验。
+
+属性名按表中的 JSON 写法填写。未知属性、重复 JSON 键、重复字段以及与自动字段冲突的定义会报错。以上是本库的实体定义格式，不是直接传给 MongoDB 的原生 `$jsonSchema`；不要在字段顶层添加 `default`、`minLength` 等属性；长度等约束放入 `rules`。
 
 字段的 Go 类型、嵌套对象及索引示例见[索引、类型和嵌套对象](#7-索引类型和嵌套对象)。
 
@@ -738,7 +756,7 @@ ctx = mongoplus.SkipTenant(ctx)                        // 受控的跨租户查�
 ctx = mongoplus.AllowGlobalOperation(ctx)              // 允许只有租户条件的批量更新或删除。
 ```
 
-`AddTenantExcludeCollection` 和 `RemoveTenantExcludeCollection` 可以在运行时调整排除集合。插件和集合配置里的 `TenantField` 可以同时存在，同名字段只注入一次。`Native()` 和后面的查询文件不自动套用这层条件。
+`AddTenantExcludeCollection` 和 `RemoveTenantExcludeCollection` 可以在运行时调整排除集合。插件和集合配置里的 `TenantField` 可以同时存在，同名字段只注入一次。`Native()` 不自动套用这层条件。DAL 会按已注册的仓储和插件追加租户、数据权限和逻辑删除；包含已删除数据时使用 `DALUnscoped`。
 
 需要租户内唯一时，显式建立 company_id 与业务字段的复合唯一索引；字段的 unique 简写仍是整个集合唯一。
 
@@ -849,7 +867,7 @@ db.UseCache(sharedCache) // 也可以在启动时统一 RegisterCache(sharedCach
 err := db.ConfigureCache(mongoplus.CacheConfig{Namespace: "orders-prod-primary"})
 ```
 
-仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。旧条目可通过可选前缀删除回收，或者按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。
+仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。保存前验证 BSON 往返是否保持完整 Go 值；空切片/空 map 的 omitempty、inline 指针等导致状态变化时，不保存共享条目，查询仍返回正确值。含自定义 BSON 编解码方法的实体，以及含 interface 动态字段的结果，自动绕过共享缓存和请求合并，避免重复解码改变值；本地 Go 值快照缓存不受影响。自行注册 Client BSON Registry 编解码器的项目应关闭仓储缓存，除非已验证默认 BSON 往返不会改变已解码值。本次共享缓存键升级为 v4，不再读取旧条目；旧数据按 TTL 或运维清理回收。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。旧条目可通过可选前缀删除回收，或者按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。
 
 生产适配器应实现 `SFCacheWithErrors`，并开启 `RequireErrorReporting`。Get/Set 故障会触发 `CacheObserver`；失效失败进入队列，当前包装器绕过共享缓存并自动重试，支持 `PendingCacheInvalidations`、`RetryCacheInvalidations` 和显式返回错误的 `InvalidateCacheContext`。这不构成跨进程强一致协议，进程崩溃也会丢失内存恢复队列；实时强一致场景仍应设置 Disabled，外部程序写入后也必须通知失效。配置、错误接口和恢复语义见[生产接入与安全配置](docs/production.md)。共享缓存总容量由后端管理，单条结果仍遵守 MaxEntryBytes 限制。
 
@@ -1366,7 +1384,7 @@ build: swagger
 
 ### 敏感字段
 
-明文建议标记 `bson:"-"`，密文和盲索引写入文档。等值查询使用索引字段，不要直接比较明文。读出默认脱敏；`WithSensitivePlaintext` 返回解密结果，`WithSensitiveCiphertext` 返回库存值。
+开启加密时明文必须标记 `bson:"-"`，密文和盲索引写入文档。等值查询使用索引字段，不要直接比较明文。读出默认脱敏；`WithSensitivePlaintext` 返回解密结果，`WithSensitiveCiphertext` 返回库存值。
 
 ```go
 phone := mongoplus.PhoneField("Phone")
@@ -1403,11 +1421,47 @@ condition := userRepository.SensitiveEq("Phone", "13800008000")
 | `index` | 盲索引 Go 字段名，必须为可导出的 string；实际路径使用该字段的 BSON 标签 |
 | `encrypt` | `true` 开启加密；省略或 `false` 时保存规范化值 |
 
-明文字段使用 `bson:"-"` 避免创建时重复持久化明文。密文和索引字段不能设置 `bson:"-"`；缺少字段或不完整标签会返回错误。不同实体的同名字段独立解析。显式 `SensitiveConfig.Fields` 优先于标签；未显式指定的路径从实体 BSON 标签推导，显式路径保持优先。
+开启 `EncryptAtRest` / `encrypt:true` 时，明文字段必须使用 `bson:"-"`，否则写入前返回错误，避免创建时重复持久化明文。密文和索引字段不能设置 `bson:"-"`；缺少字段或不完整标签会返回错误。不同实体的同名字段独立解析。显式 `SensitiveConfig.Fields` 优先于标签；未显式指定的路径从实体 BSON 标签推导，显式持久化路径必须与实体 BSON 标签一致，不一致会在首次编译该实体元数据时返回错误。`bson:"-"` 的明文允许配置虚拟查询别名。所有敏感字段的明文、密文、索引路径都不能互相重叠，包括父子路径和不同 Go 字段使用相同 BSON 标签的情况。
 
 `UpdateById`、`UpdateMapById`、`UpdateByWrapper` 支持对逻辑字段执行 Set，并同时刷新密文和盲索引；Unset 同时删除密文和索引。其他操作符和逻辑字段的父子路径更新会报错。等值查询优先使用仓储 `SensitiveEq`；插件的 `Eq`/`PhoneEq` 仍按显式配置或默认约定生成条件，不推断某个实体的标签。升级后重新生成 `_gen.go` 以在生成的仓储接口上使用新方法；手写 mock 需要补充 `SensitiveEq`。
 
 修复不会自动清理旧版本已经写入的明文字段或恢复旧密文。受影响数据应先核对明文、密文与业务记录，再通过独立迁移重建密文和盲索引并删除遗留明文。DAL/Native 原生操作仍由业务负责敏感字段规则。
+
+#### 嵌套敏感字段与失败写入
+
+标签支持命名嵌套结构体、结构体指针、匿名嵌入、`bson:",inline"`，以及切片和数组中的结构体。空指针或空数组元素会跳过，不会为缺失对象自动分配内存。完整 Go 路径与实际 BSON 路径共用同一份元数据：
+
+```go
+type ContactEntity struct {
+    Phone       string `bson:"-" mongoplus:"cipher:PhoneCipher;index:PhoneIndex;encrypt:true"`
+    PhoneCipher string `bson:"secure_phone"`
+    PhoneIndex  string `bson:"lookup_phone"`
+}
+
+type CustomerEntity struct {
+    ID       int64           `bson:"_id"`
+    Profile  *ContactEntity  `bson:"profile,omitempty"`
+    Contacts []ContactEntity `bson:"contacts"`
+}
+
+// 使用完整 Go 路径或逻辑 BSON 路径；条件实际落在 profile.lookup_phone。
+condition := customerRepository.SensitiveEq("Profile.Phone", "13800008000")
+
+// 对数组的查询匹配任一元素；更新指定元素时必须提供数字下标。
+condition = customerRepository.SensitiveEq("Contacts.Phone", "13800008000")
+_, err := customerRepository.UpdateMapById(ctx, id, map[string]any{
+    "profile.phone":    "13900009000",
+    "contacts.0.phone": "13700007000",
+})
+```
+
+同名字段在多个嵌套对象中出现时，`SensitiveEq("Phone", ...)` 会返回歧义错误，应使用 `Profile.Phone` 等完整路径。显式配置也可以使用 `PhoneField("Profile.Phone")`，仅覆盖该嵌套字段的规范化、加密及展示规则。
+
+更新包含敏感字段的整个父对象或数组会报错，防止绕过加密；应逐个更新敏感叶子字段，数组使用数字下标。普通非敏感叶子字段仍可正常更新。敏感实体暂不支持存放在 map/interface 动态容器中，也不支持递归敏感实体类型；这些输入会明确返回错误。普通 map/interface BSON 数据不受影响。
+
+创建时仅复制敏感写入涉及的指针链和切片，保留原 Go 类型及其他字段的编解码行为。`Create` 失败不修改原实体；有序 `CreateBatch` 只回填已获确认的成功前缀，失败和未执行记录保持原样，即使输入之间共享嵌套指针也不会串改。事务内成功的创建语句仍会回填；后续事务回滚不自动撤销内存中的回填，与主键回填语义一致。
+
+旧版本若已跳过嵌套敏感字段，修复后不会凭空恢复缺失值；需从可信业务来源恢复，并核对密文、盲索引及缓存失效。
 
 ### 主从数据源
 
@@ -1474,9 +1528,58 @@ err = r.Repository.WithDAL(ctx, dal, func(queryCtx context.Context) error {
 
 计数文件为 `user/count_page.json`，过滤一致，`op=count`；聚合计数使用 `op=aggregate` 并返回 `total`。DAL 写入会通知相关 Repository 缓存失效，本库事务在提交后发布，回滚不失效；部分写入失败也保守处理。
 
-DAL 文件不会自动添加租户、严格数据权限、软删除或审计字段，`WithDAL` 负责数据源/事务绑定，条件仍需在每个集合及子管道中明确编写。物理删除事件的租户识别、订阅检查点和重复事件由消费者处理。
+DAL 在执行时按数据库上的租户插件、数据权限和已创建仓储的逻辑删除配置追加条件。已有文件里的租户条件会与这层条件同时生效。`DALUnscoped` 只放开已删除记录的过滤范围；物理删除必须显式使用 `DALPhysicalDelete`，删除历史软删除文档时组合两个 Context 标记。`Native()` 和 `DALNative` 仍由业务自己写这些条件。变更订阅会在 `fullDocument` 上追加同样的范围；物理删除事件的检查点和重复事件由消费者处理。
 
 完整的属性/选项表、参数绑定、变更订阅恢复、批量部分成功与事务边界见 [DAL 使用文档](docs/dal.md)。可复制的 [业务仓储示例](examples/dal/README.md) 和 [JSON 文件](examples/dal/query/user/summary.json) 均有真实数据库回归验证。
+
+## 16. 原子复合操作与官方扩展选项
+
+原子接口在一次服务端操作中完成条件匹配、写入和返回，适合领取任务、状态竞争和计数后读取。更新、租户、数据权限、敏感字段、审计和事务缓存失效沿用公共仓储规则。
+
+```go
+job, err := repo.FindOneAndUpdate(ctx,
+    mongoplus.Query().
+        Where(dao.JobEntity.Status.Eq(1)).
+        Order(dao.JobEntity.ID.Asc()).
+        Build(),
+    mongoplus.ModifyOptions{
+        ReturnDocument: options.After,
+        Upsert:         false,
+    },
+    dao.JobEntity.Status.Set(2),
+)
+```
+
+| 接口 / 选项 | 行为与边界 |
+| --- | --- |
+| `FindOneAndUpdate(ctx, query, modify, updates...)` | 默认返回修改前文档；`ReturnDocument: options.After` 返回修改后文档。没有业务过滤时必须显式 AllowAll。 |
+| `FindOneAndDelete(ctx, query, deleteOptions...)` | 启用软删除时返回删除前文档并原子标记删除；物理删除选项仍遵循租户与权限。 |
+| `FindOneAndReplace(ctx, query, replacement, modify)` | 必须提供非零主键并追加同主键过滤；原子全量替换业务字段，保留原主键、创建时间、创建人及删除标记，重新应用租户、加密和自动填充；不修改输入实体。内部使用更新管道。 |
+| `ModifyOptions.Upsert` | 自增主键仓储明确拒绝原子 Upsert（含查改和查替换），避免与其他实例预分配号段冲突；请用 Create 分配 ID，或使用 `IDGenerationManual` 的手动主键仓储。手动 int64/string 主键必须在 Query 中提供 `_id` 等值；不会静默生成 ObjectID 或分配自增号码。无匹配且返回 Before 时，成功插入也会返回 ErrNotFound；需要新记录时选择 After。 |
+| `Distinct(ctx, path, query...)` | 按租户、权限和删除范围去重；支持 Collation/Hint/Comment（Hint 需要 MongoDB 7.1+）；返回原始 BSON 值，不解密敏感字段。 |
+| `EstimatedDocumentCount(ctx)` | 整集合元数据估计；有租户、权限或软删除策略时直接拒绝，改用 Count。 |
+| `Query().Collation(...)` | 语言比较规则；纳入缓存键，防止不同比较语义共用结果。 |
+| `Hint(...)` / `Let(bson.D{...})` / `Comment(...)` | 指定索引、命令变量和注释；来自可信业务代码。CountDocuments 不支持 Let，使用聚合计数。 |
+| `BatchSize(n)` / `AllowDiskUse(bool)` | Find/Walk 和根聚合命令选项；原子写入口拒绝分页、缓存和游标选项。 |
+| 数值与数组字段 | 新增 Mul、Min、Max、CurrentDate、PopFirst、PopLast、PullAll、All、Size、BSONType、Nor；系统字段仍受保护。 |
+
+原始 `Aggregate` 的 Order、Offset、Limit、Select/Omit 作用于用户管道的最终输出，拒绝缓存与请求合并选项。字符串主键的 FindCursorPage、FindPage 和稳定关联分页显式使用 simple Collation，覆盖集合默认规则；传入其他 Collation 会报错，以免大小写等价的不同主键漏页。
+
+普通 `UpdateByWrapper` / `DeleteByWrapper` / `HardDeleteByWrapper` 会透传 Collation、Hint、Let 和 Comment，逻辑删除沿用同样选项。排序、投影、分页、缓存和游标选项在普通写入中返回错误；需要排序领取一条记录时使用 `FindOneAndUpdate`。
+
+生成的仓储接口与显式方法已同步；升级工具后重新生成 `_gen.go`。生成器还输出 `collections_gen.go`，服务启动、创建 DAL 之前调用：
+
+```go
+if err := repository.RegisterGeneratedCollections(db); err != nil {
+    return err
+}
+```
+
+手写仓储可调用 `db.RegisterCollections(configs...)`。同集合的规则必须完全相同，冲突会报错；一次注册失败不会发布部分规则。每个数据源包装器都要注册自己的规则。字符串租户条件额外使用不受 Collation 影响的精确匹配，业务的大小写比较规则不会扩大租户授权范围。
+
+DAL 文件补充了 Collation、Let、批量模型 Collation/Sort、订阅 ShowExpandedEvents，详见 [DAL 属性表](docs/dal.md)。原子复合操作通过 Repository 接口使用；文件层未覆盖的命令使用 `WithDAL` + `DALNative`。
+
+TimeSeries、Clustered、View、GridFS、数据库/Client 级订阅、跨命名空间批量和 Search 索引仍通过官方驱动扩展。它们需要业务明确设计集合范围、订阅权限、断点与跨库缓存失效；参见 [DAL 原生扩展](docs/dal.md#高级官方能力的接入边界)。
 
 ## 性能与生产使用
 
@@ -1485,3 +1588,6 @@ DAL 文件不会自动添加租户、严格数据权限、软删除或审计字�
 生产使用前应完成真实数据量与目标并发的压测、超时与故障恢复验证。仓库持续集成包含真实三节点副本集、竞态检查、Gin/goctl 集成、主节点切换后读写与事务恢复、漏洞扫描；这些检查不替代业务环境的容量和长期稳定性验证。详细命令与限制见 [性能验证与生产接入](docs/performance.md)。
 
 v0.0.2 增加租户字段更新保护、权限 Strict 模式、缓存错误恢复及独立版本迁移。迁移执行锁、SHA256 历史、失败恢复、显式 Down 和分批回填，以及版本发布方式，统一见[生产接入与安全配置](docs/production.md)。版本发布状态见[更新记录](CHANGELOG.md)。
+
+
+接口选项的支持、拒绝和原生扩展范围集中见[查询与写入契约](docs/contracts.md)。参数日志中的表达式、let 变量和脚本保留结构但隐藏标量常量；需要隐藏所有业务参数时设置 HideParameters。公共 SF 使用保留嵌套类型信息的 v2 键，旧键不再读取。

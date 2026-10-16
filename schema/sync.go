@@ -21,16 +21,29 @@ type Change struct {
 }
 
 type existingIndex struct {
-	Name    string `bson:"name"`
-	Key     bson.D `bson:"key"`
-	Unique  bool   `bson:"unique"`
-	Sparse  bool   `bson:"sparse"`
-	Partial bson.D `bson:"partialFilterExpression"`
-	TTL     *int32 `bson:"expireAfterSeconds"`
+	Name             string `bson:"name"`
+	Key              bson.D `bson:"key"`
+	Unique           bool   `bson:"unique"`
+	Sparse           bool   `bson:"sparse"`
+	Partial          bson.D `bson:"partialFilterExpression"`
+	TTL              *int32 `bson:"expireAfterSeconds"`
+	Collation        bson.D `bson:"collation"`
+	Hidden           bool   `bson:"hidden"`
+	Weights          bson.D `bson:"weights"`
+	DefaultLanguage  string `bson:"default_language"`
+	LanguageOverride string `bson:"language_override"`
 }
 
 // Plan 比较集合、校验器和索引；检测冲突时在任何写操作前返回错误。
 func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change, error) {
+	if ctx == nil || db == nil {
+		return nil, fmt.Errorf("结构计划需要上下文和数据库")
+	}
+	for _, entity := range entities {
+		if entity.ID == nil || entity.SoftDelete == nil || entity.Timestamps == nil || entity.Collection == "" {
+			return nil, fmt.Errorf("集合 %q 未完成 Normalize，不能生成结构计划", entity.Collection)
+		}
+	}
 	changes := []Change{}
 	for _, e := range entities {
 		cursor, err := db.ListCollections(ctx, bson.D{{Key: "name", Value: e.Collection}})
@@ -40,6 +53,13 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 		var infos []struct {
 			Name    string `bson:"name"`
 			Options struct {
+				Collation bson.D `bson:"collation"`
+				Capped    bool   `bson:"capped"`
+				Size      int64  `bson:"size"`
+				Max       int64  `bson:"max"`
+				PreImages struct {
+					Enabled bool `bson:"enabled"`
+				} `bson:"changeStreamPreAndPostImages"`
 				Validator        bson.D `bson:"validator"`
 				ValidationLevel  string `bson:"validationLevel"`
 				ValidationAction string `bson:"validationAction"`
@@ -56,10 +76,23 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 			change.Create = true
 		} else {
 			current := infos[0].Options
+			if e.Options != nil {
+				o := e.Options
+				if !equalDocument(collationSpec(current.Collation), collationDocument(o.Collation)) || o.Capped != current.Capped || (o.Capped && (cappedStorageSize(o.SizeInBytes) != current.Size || (o.MaxDocuments != 0 && o.MaxDocuments != current.Max))) || (o.ChangeStreamPreAndPostImages != nil && *o.ChangeStreamPreAndPostImages != current.PreImages.Enabled) {
+					return nil, fmt.Errorf("集合 %s 的存储/排序/pre-image 配置冲突，请显式迁移", e.Collection)
+				}
+			}
+			level, action := e.validationMode()
+			actualLevel, actualAction := current.ValidationLevel, current.ValidationAction
+			if actualLevel == "" {
+				actualLevel = "strict"
+			}
+			if actualAction == "" {
+				actualAction = "error"
+			}
 			// 未返回的选项采用服务端默认值 strict/error。
 			change.UpdateValidator = !equalDocument(current.Validator, e.Validator()) ||
-				(current.ValidationLevel != "" && current.ValidationLevel != "strict") ||
-				(current.ValidationAction != "" && current.ValidationAction != "error")
+				actualLevel != level || actualAction != action
 			cursor, err = db.Collection(e.Collection).Indexes().List(ctx)
 			if err != nil {
 				return nil, err
@@ -71,7 +104,7 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 			}
 		}
 		for _, index := range e.Indexes {
-			wanted := expectedIndex(index)
+			wanted := expectedIndex(e.effectiveIndex(index))
 			found := false
 			for _, old := range indexes {
 				if old.Name == wanted.Name || equalKeys(old.Key, wanted.Key) {
@@ -119,12 +152,13 @@ func apply(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change
 			}
 		}
 		if change.Create {
-			err = db.CreateCollection(ctx, entity.Collection, options.CreateCollection().SetValidator(entity.Validator()).SetValidationLevel("strict").SetValidationAction("error"))
+			err = db.CreateCollection(ctx, entity.Collection, entity.createOptions())
 			if err != nil {
 				return changes, fmt.Errorf("创建集合 %s: %w", entity.Collection, err)
 			}
 		} else if change.UpdateValidator {
-			err = db.RunCommand(ctx, bson.D{{Key: "collMod", Value: entity.Collection}, {Key: "validator", Value: entity.Validator()}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err()
+			level, action := entity.validationMode()
+			err = db.RunCommand(ctx, bson.D{{Key: "collMod", Value: entity.Collection}, {Key: "validator", Value: entity.Validator()}, {Key: "validationLevel", Value: level}, {Key: "validationAction", Value: action}}).Err()
 			if err != nil {
 				return changes, fmt.Errorf("同步集合 %s 校验规则: %w", entity.Collection, err)
 			}
@@ -134,15 +168,23 @@ func apply(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change
 				if index.Name != name {
 					continue
 				}
+				index = entity.effectiveIndex(index)
 				wanted := expectedIndex(index)
 				opts := options.Index().SetName(name).SetUnique(index.Unique).SetSparse(index.Sparse)
-				if index.ActiveOnly {
+				opts.SetHidden(index.Hidden)
+				if index.Collation != nil {
+					opts.SetCollation(index.Collation)
+				}
+				if len(wanted.Weights) > 0 {
+					opts.SetWeights(wanted.Weights).SetDefaultLanguage(wanted.DefaultLanguage).SetLanguageOverride(wanted.LanguageOverride)
+				}
+				if len(wanted.Partial) > 0 {
 					opts.SetPartialFilterExpression(wanted.Partial)
 				}
 				if index.ExpireAfterSeconds != nil {
 					opts.SetExpireAfterSeconds(*index.ExpireAfterSeconds)
 				}
-				_, err = db.Collection(entity.Collection).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: wanted.Key, Options: opts})
+				_, err = db.Collection(entity.Collection).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: indexKeys(index), Options: opts})
 				if err != nil {
 					return changes, fmt.Errorf("创建 %s.%s 索引: %w", entity.Collection, name, err)
 				}
@@ -153,18 +195,46 @@ func apply(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change
 }
 
 func expectedIndex(index Index) existingIndex {
-	wanted := existingIndex{Name: index.Name, Unique: index.Unique, Sparse: index.Sparse, TTL: index.ExpireAfterSeconds}
+	wanted := existingIndex{Name: index.Name, Unique: index.Unique, Sparse: index.Sparse, TTL: index.ExpireAfterSeconds, Collation: collationDocument(index.Collation), Hidden: index.Hidden}
+	weights := bson.M{}
+	for k, v := range index.Weights {
+		weights[k] = v
+	}
+	text := false
 	for _, f := range index.Fields {
+		if f.Order == "text" {
+			if !text {
+				wanted.Key = append(wanted.Key, bson.E{Key: "_fts", Value: "text"}, bson.E{Key: "_ftsx", Value: 1})
+				text = true
+			}
+			if _, ok := weights[f.Name]; !ok {
+				weights[f.Name] = 1
+			}
+			continue
+		}
 		wanted.Key = append(wanted.Key, bson.E{Key: f.Name, Value: f.Order})
+	}
+	if text {
+		wanted.Weights = sortedDocument(weights)
+		wanted.DefaultLanguage = index.DefaultLanguage
+		if wanted.DefaultLanguage == "" {
+			wanted.DefaultLanguage = "english"
+		}
+		wanted.LanguageOverride = index.LanguageOverride
+		if wanted.LanguageOverride == "" {
+			wanted.LanguageOverride = "language"
+		}
 	}
 	if index.ActiveOnly {
 		wanted.Partial = bson.D{{Key: "deleted_at", Value: bson.D{{Key: "$eq", Value: nil}}}}
+	} else if len(index.PartialFilterExpression) > 0 {
+		wanted.Partial = sortedDocument(index.PartialFilterExpression)
 	}
 	return wanted
 }
 
 func equalIndex(a, b existingIndex) bool {
-	return equalKeys(a.Key, b.Key) && a.Unique == b.Unique && a.Sparse == b.Sparse && reflect.DeepEqual(a.TTL, b.TTL) && equalDocument(a.Partial, b.Partial)
+	return equalKeys(a.Key, b.Key) && a.Unique == b.Unique && a.Sparse == b.Sparse && reflect.DeepEqual(a.TTL, b.TTL) && equalDocument(a.Partial, b.Partial) && equalDocument(collationSpec(a.Collation), collationSpec(b.Collation)) && a.Hidden == b.Hidden && equalDocument(a.Weights, b.Weights) && a.DefaultLanguage == b.DefaultLanguage && a.LanguageOverride == b.LanguageOverride
 }
 
 func equalKeys(a, b bson.D) bool {
@@ -187,7 +257,6 @@ func equalDocument(a, b bson.D) bool {
 		return true
 	}
 	// 文档中的 required/property 顺序不影响校验意义；本库输出顺序稳定。
-	aa, e1 := bson.MarshalExtJSON(a, false, false)
-	bb, e2 := bson.MarshalExtJSON(b, false, false)
-	return e1 == nil && e2 == nil && bytes.Equal(aa, bb)
+	aa, bb := canonicalDocument(a), canonicalDocument(b)
+	return aa != nil && bb != nil && bytes.Equal(aa, bb)
 }

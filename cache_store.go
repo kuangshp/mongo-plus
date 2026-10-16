@@ -105,24 +105,28 @@ func activeCacheStore(db *Database) sf.SFCache {
 	return sf.Explicit()
 }
 
-func sharedCachePrefix(db *Database, collection string) string {
+func cacheNamespace(db *Database) string {
 	db.cache.mu.Lock()
-	namespace := db.cache.limits.Namespace
-	if namespace == "" {
-		if db.cache.namespace == "" {
-			db.cache.namespace = rand.Text()
-		}
-		namespace = db.cache.namespace
+	defer db.cache.mu.Unlock()
+	if db.cache.limits.Namespace != "" {
+		return db.cache.limits.Namespace
 	}
-	db.cache.mu.Unlock()
+	if db.cache.namespace == "" {
+		db.cache.namespace = rand.Text()
+	}
+	return db.cache.namespace
+}
+
+func sharedCachePrefix(db *Database, collection string) string {
+	namespace := cacheNamespace(db)
 	name := "default"
 	if db.native != nil && db.native.Name() != "" {
 		name = db.native.Name()
 	}
-	// 长度和分隔符不会造成命名空间碰撞，v2 也隔离修复前的缓存条目。
+	// v4 隔离未做值保真校验的旧条目；长度和分隔符不会造成命名空间碰撞。
 	raw, _ := bson.Marshal(bson.D{{Key: "source", Value: namespace}, {Key: "database", Value: name}, {Key: "collection", Value: collection}})
 	hash := sha256.Sum256(raw)
-	return "mprepo:v2:" + hex.EncodeToString(hash[:]) + ":"
+	return "mprepo:v4:" + hex.EncodeToString(hash[:]) + ":"
 }
 
 func deleteSharedCache(ctx context.Context, peers []*Database, collection string) error {
@@ -155,6 +159,16 @@ func sharedCacheVersion(ctx context.Context, db *Database, store sf.SFCache, col
 		}
 		return ""
 	}
+	if db.native != nil {
+		epoch, err := db.currentCacheEpoch(ctx, collection)
+		if err != nil || epoch == "" {
+			if err != nil {
+				db.cacheEvent(ctx, "epoch", collection, err)
+			}
+			return ""
+		}
+		return epoch
+	}
 	key := prefix + "version"
 	value, found, err := cacheGet(ctx, db, store, collection, key)
 	if err != nil {
@@ -175,6 +189,11 @@ func sharedCacheVersion(ctx context.Context, db *Database, store sf.SFCache, col
 }
 
 func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCache, db *Database, scope, method, hash string, epoch, generation uint64, o QueryOption, load func() (V, error)) (V, error) {
+	// 已解码的对象不能保证再次 BSON 编解码仍保持值不变。
+	// 自定义 BSON 方法和动态 interface 容器直接回源，既不读旧缓存也不合并请求。
+	if !sharedBSONSafe(reflect.TypeFor[V](), map[reflect.Type]bool{}) {
+		return load()
+	}
 	prefix := sharedCachePrefix(db, scope)
 	version := sharedCacheVersion(ctx, db, store, scope, prefix)
 	if version == "" {
@@ -193,9 +212,11 @@ func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCa
 	}
 	if value, ok := sharedValue[V](stored, found); ok {
 		if copied, _, copiedOK := copyCacheValue(value); copiedOK {
+			db.cacheEvent(ctx, "hit", scope, nil)
 			return copied, nil
 		}
 	}
+	db.cacheEvent(ctx, "miss", scope, nil)
 	owner := new(byte)
 	flightKey := fmt.Sprintf("%s/%d/%d", key, generation, epoch)
 	result := local.group.DoChan(flightKey, func() (any, error) {
@@ -207,7 +228,7 @@ func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCa
 		if !ok {
 			return sharedFlight[V]{value: value, owner: owner}, nil
 		}
-		if raw, err := bson.Marshal(bson.D{{Key: "v", Value: copied}}); err == nil {
+		if raw, stable := encodeSharedValue(copied); stable {
 			local.mu.Lock()
 			limits := local.limits.defaults()
 			eligible := !local.disabled && !limits.Disabled && local.generation == generation && local.epochs[scope] == epoch && bytes <= limits.MaxEntryBytes && bytes <= limits.MaxBytes
@@ -237,6 +258,53 @@ func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCa
 		}
 		return load()
 	}
+}
+
+// 仅静态排除自定义解码器不足以覆盖 omitempty、inline 指针、时区及私有状态。
+// 每次保存前验证 BSON 往返保持完整 Go 值；不能无损保存时只共享 Go 副本，不写共享后端。
+func encodeSharedValue[V any](value V) (sf.RawValue, bool) {
+	raw, err := bson.Marshal(bson.D{{Key: "v", Value: value}})
+	if err != nil {
+		return nil, false
+	}
+	decoded, ok := sharedValue[V](sf.RawValue(raw), true)
+	if !ok || !reflect.DeepEqual(value, decoded) {
+		return nil, false
+	}
+	return sf.RawValue(raw), true
+}
+
+// sharedBSONSafe 只允许可静态证明不含自定义 BSON 方法的类型使用共享 BSON 缓存。
+// interface 的运行时类型无法在读取缓存前验证，保守绕过；本地 Go 值快照缓存不受影响。
+func sharedBSONSafe(typ reflect.Type, seen map[reflect.Type]bool) bool {
+	if seen[typ] {
+		return true
+	}
+	seen[typ] = true
+	for _, contract := range []reflect.Type{
+		reflect.TypeFor[bson.Marshaler](), reflect.TypeFor[bson.Unmarshaler](),
+		reflect.TypeFor[bson.ValueMarshaler](), reflect.TypeFor[bson.ValueUnmarshaler](),
+	} {
+		if typ.Implements(contract) || reflect.PointerTo(typ).Implements(contract) {
+			return false
+		}
+	}
+	switch typ.Kind() {
+	case reflect.Interface:
+		return false
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return sharedBSONSafe(typ.Elem(), seen)
+	case reflect.Map:
+		return sharedBSONSafe(typ.Key(), seen) && sharedBSONSafe(typ.Elem(), seen)
+	case reflect.Struct:
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			if f.IsExported() && f.Tag.Get("bson") != "-" && !sharedBSONSafe(f.Type, seen) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type sharedFlight[V any] struct {

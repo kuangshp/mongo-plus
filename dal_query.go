@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // DALQuery 按位置参数执行 find/aggregate 文件，返回多条记录；大结果集使用 DALWalk。
@@ -16,7 +17,7 @@ func DALQuery[T any](ctx context.Context, file string, args ...any) ([]T, error)
 		return nil, err
 	}
 	var rows []T
-	err = dal.run(ctx, file, args, func() error {
+	err = dal.run(ctx, file, args, func(ctx context.Context) error {
 		command, err := dal.command(file, args, nil)
 		if err != nil {
 			return err
@@ -35,7 +36,7 @@ func DALQueryOne[T any](ctx context.Context, file string, args ...any) (*T, erro
 		return nil, err
 	}
 	var row *T
-	err = dal.run(ctx, file, args, func() error {
+	err = dal.run(ctx, file, args, func(ctx context.Context) error {
 		command, err := dal.command(file, args, nil)
 		if err != nil {
 			return err
@@ -59,7 +60,7 @@ func DALQueryNamed[T any](ctx context.Context, file string, params map[string]an
 		return nil, err
 	}
 	var rows []T
-	err = dal.run(ctx, file, namedArgs(params), func() error {
+	err = dal.run(ctx, file, namedArgs(params), func(ctx context.Context) error {
 		command, err := dal.command(file, nil, params)
 		if err != nil {
 			return err
@@ -79,7 +80,7 @@ func DALQueryOneNamed[T any](ctx context.Context, file string, params map[string
 		return nil, err
 	}
 	var row *T
-	err = dal.run(ctx, file, namedArgs(params), func() error {
+	err = dal.run(ctx, file, namedArgs(params), func(ctx context.Context) error {
 		command, err := dal.command(file, nil, params)
 		if err != nil {
 			return err
@@ -98,7 +99,7 @@ func DALCount(ctx context.Context, file string, args ...any) (int64, error) {
 		return 0, err
 	}
 	var total int64
-	err = dal.run(ctx, file, args, func() error {
+	err = dal.run(ctx, file, args, func(ctx context.Context) error {
 		var command dalCommand
 		if len(args) == 1 {
 			if params, ok := args[0].(map[string]any); ok {
@@ -126,7 +127,7 @@ func DALQueryPage[T any](ctx context.Context, file string, filterArgs []any, pag
 		return DALPageResult[T]{}, err
 	}
 	var result DALPageResult[T]
-	err = dal.run(ctx, file, append(append([]any{}, filterArgs...), pageArgs...), func() error {
+	err = dal.run(ctx, file, append(append([]any{}, filterArgs...), pageArgs...), func(ctx context.Context) error {
 		command, err := dal.command(file, append(append([]any{}, filterArgs...), pageArgs...), nil)
 		if err != nil {
 			return err
@@ -155,7 +156,7 @@ func DALQueryPageNamed[T any](ctx context.Context, file string, params map[strin
 		return DALPageResult[T]{}, err
 	}
 	var result DALPageResult[T]
-	err = dal.run(ctx, file, namedArgs(params), func() error {
+	err = dal.run(ctx, file, namedArgs(params), func(ctx context.Context) error {
 		command, err := dal.command(file, nil, params)
 		if err != nil {
 			return err
@@ -188,7 +189,7 @@ func DALExecAffected(ctx context.Context, file string, args ...any) (*DALExecRes
 		return nil, err
 	}
 	var result *DALExecResult
-	err = dal.run(ctx, file, args, func() error {
+	err = dal.run(ctx, file, args, func(ctx context.Context) error {
 		command, err := dal.command(file, args, nil)
 		if err != nil {
 			return err
@@ -214,7 +215,7 @@ func DALExecAffectedNamed(ctx context.Context, file string, params map[string]an
 		return nil, err
 	}
 	var result *DALExecResult
-	err = dal.run(ctx, file, namedArgs(params), func() error {
+	err = dal.run(ctx, file, namedArgs(params), func(ctx context.Context) error {
 		command, err := dal.command(file, nil, params)
 		if err != nil {
 			return err
@@ -351,17 +352,42 @@ func runDALCount(ctx context.Context, dal *DAL, command dalCommand) (int64, erro
 	if command.op != "count" {
 		return 0, fmt.Errorf("DALCount 需要 op=count 或返回 total 的 aggregate")
 	}
-	if len(command.options) != 0 {
-		return 0, fmt.Errorf("count options 请通过 DALNative 配置")
+	command, err := applyDALScope(ctx, dal, command)
+	if err != nil {
+		return 0, err
+	}
+	opts := options.Count()
+	for _, item := range command.options {
+		switch item.Key {
+		case "collation":
+			value, err := dalCollation(item.Value)
+			if err != nil {
+				return 0, err
+			}
+			opts.SetCollation(value)
+		case "hint":
+			opts.SetHint(item.Value)
+		case "comment":
+			opts.SetComment(item.Value)
+		default:
+			return 0, fmt.Errorf("不支持的 count options.%s", item.Key)
+		}
 	}
 	collection, err := dalCollection(ctx, dal, command)
 	if err != nil {
 		return 0, err
 	}
-	return collection.CountDocuments(ctx, filterOrEmpty(command.filter))
+	return collection.CountDocuments(ctx, filterOrEmpty(command.filter), opts)
 }
 
 func runDALWrite(ctx context.Context, dal *DAL, command dalCommand) (*DALExecResult, error) {
+	if command.op != "bulkWrite" {
+		var err error
+		command, err = applyDALScope(ctx, dal, command)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if command.op == "aggregate" {
 		return runDALWriteAggregate(ctx, dal, command)
 	}

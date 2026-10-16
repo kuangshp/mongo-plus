@@ -27,7 +27,7 @@ func dalBulkWrite(ctx context.Context, file string, args []any, params map[strin
 		return nil, err
 	}
 	var result *mongo.BulkWriteResult
-	err = dal.run(ctx, file, dalHookArgs(args, params), func() error {
+	err = dal.run(ctx, file, dalHookArgs(args, params), func(ctx context.Context) error {
 		command, err := dal.command(file, args, params)
 		if err != nil {
 			return err
@@ -42,6 +42,14 @@ func runDALBulk(ctx context.Context, dal *DAL, command dalCommand) (*mongo.BulkW
 	if command.op != "bulkWrite" {
 		return nil, fmt.Errorf("DALBulkWrite 需要 op=bulkWrite")
 	}
+	// 在追加系统条件前验证业务过滤，AllowAll 不得改变租户/权限范围。
+	if _, err := dalBulkModels(command); err != nil {
+		return nil, err
+	}
+	command, err := applyDALScope(ctx, dal, command)
+	if err != nil {
+		return nil, err
+	}
 	models, err := dalBulkModels(command)
 	if err != nil {
 		return nil, err
@@ -55,6 +63,12 @@ func runDALBulk(ctx context.Context, dal *DAL, command dalCommand) (*mongo.BulkW
 				return nil, err
 			}
 			opts.SetOrdered(value)
+		case "let":
+			value, err := dalDocument(item.Value)
+			if err != nil {
+				return nil, err
+			}
+			opts.SetLet(value)
 		case "comment":
 			opts.SetComment(item.Value)
 		default:
@@ -97,6 +111,8 @@ func dalBulkModel(raw any, inheritedAllowAll bool) (mongo.WriteModel, error) {
 	var filter, document, replacement bson.D
 	var update any
 	var upsert bool
+	var collation *options.Collation
+	var sort bson.D
 	var hint any
 	var arrayFilters []any
 	allowAll := inheritedAllowAll
@@ -128,6 +144,10 @@ func dalBulkModel(raw any, inheritedAllowAll bool) (mongo.WriteModel, error) {
 			upsert, err = dalBool(item.Value)
 		case "allowAll":
 			allowAll, err = dalBool(item.Value)
+		case "collation":
+			collation, err = dalCollation(item.Value)
+		case "sort":
+			sort, err = dalDocument(item.Value)
 		case "hint":
 			hint = item.Value
 		case "arrayFilters":
@@ -153,17 +173,20 @@ func dalBulkModel(raw any, inheritedAllowAll bool) (mongo.WriteModel, error) {
 	case "insertOne":
 		allowed["document"] = true
 	case "updateOne", "updateMany":
-		for _, key := range []string{"filter", "update", "upsert", "arrayFilters", "hint"} {
+		for _, key := range []string{"filter", "update", "upsert", "arrayFilters", "hint", "collation"} {
 			allowed[key] = true
 		}
 	case "replaceOne":
-		for _, key := range []string{"filter", "replacement", "upsert", "hint"} {
+		for _, key := range []string{"filter", "replacement", "upsert", "hint", "collation", "sort"} {
 			allowed[key] = true
 		}
 	case "deleteOne", "deleteMany":
-		allowed["filter"], allowed["hint"] = true, true
+		allowed["filter"], allowed["hint"], allowed["collation"] = true, true, true
 	default:
 		return nil, fmt.Errorf("不支持的批量操作 %s", op)
+	}
+	if op == "updateOne" {
+		allowed["sort"] = true
 	}
 	for key := range seen {
 		if !allowed[key] {
@@ -182,6 +205,12 @@ func dalBulkModel(raw any, inheritedAllowAll bool) (mongo.WriteModel, error) {
 		}
 		if op == "updateOne" {
 			model := mongo.NewUpdateOneModel().SetFilter(filterOrEmpty(filter)).SetUpdate(update).SetUpsert(upsert)
+			if collation != nil {
+				model.SetCollation(collation)
+			}
+			if sort != nil {
+				model.SetSort(sort)
+			}
 			if arrayFilters != nil {
 				model.SetArrayFilters(arrayFilters)
 			}
@@ -191,6 +220,9 @@ func dalBulkModel(raw any, inheritedAllowAll bool) (mongo.WriteModel, error) {
 			return model, nil
 		}
 		model := mongo.NewUpdateManyModel().SetFilter(filterOrEmpty(filter)).SetUpdate(update).SetUpsert(upsert)
+		if collation != nil {
+			model.SetCollation(collation)
+		}
 		if arrayFilters != nil {
 			model.SetArrayFilters(arrayFilters)
 		}
@@ -203,18 +235,30 @@ func dalBulkModel(raw any, inheritedAllowAll bool) (mongo.WriteModel, error) {
 			return nil, fmt.Errorf("replaceOne 缺少 replacement")
 		}
 		model := mongo.NewReplaceOneModel().SetFilter(filterOrEmpty(filter)).SetReplacement(replacement).SetUpsert(upsert)
+		if sort != nil {
+			model.SetSort(sort)
+		}
+		if collation != nil {
+			model.SetCollation(collation)
+		}
 		if hint != nil {
 			model.SetHint(hint)
 		}
 		return model, nil
 	case "deleteOne":
 		model := mongo.NewDeleteOneModel().SetFilter(filterOrEmpty(filter))
+		if collation != nil {
+			model.SetCollation(collation)
+		}
 		if hint != nil {
 			model.SetHint(hint)
 		}
 		return model, nil
 	case "deleteMany":
 		model := mongo.NewDeleteManyModel().SetFilter(filterOrEmpty(filter))
+		if collation != nil {
+			model.SetCollation(collation)
+		}
 		if hint != nil {
 			model.SetHint(hint)
 		}

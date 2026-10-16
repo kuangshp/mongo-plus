@@ -7,6 +7,7 @@ import (
 
 	"github.com/kuangshp/mongo-plus/field"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type Condition = field.Condition
@@ -14,6 +15,13 @@ type UpdateOp = field.UpdateOp
 
 // QueryOption 保存一次查询的条件；Build 后不应修改其中的 BSON 值。
 type QueryOption struct {
+	collation    *options.Collation
+	hint         any
+	let          bson.D
+	comment      any
+	batchSize    int32
+	allowDiskUse *bool
+
 	cacheTTL     time.Duration
 	singleFlight bool
 	conditions   []Condition
@@ -215,6 +223,24 @@ func (w *Wrapper) Build() QueryOption {
 func mergeOptions(options []QueryOption) QueryOption {
 	o := QueryOption{}
 	for _, next := range options {
+		if next.collation != nil {
+			o.collation = next.collation
+		}
+		if next.hint != nil {
+			o.hint = next.hint
+		}
+		if next.let != nil {
+			o.let = next.let
+		}
+		if next.comment != nil {
+			o.comment = next.comment
+		}
+		if next.batchSize != 0 {
+			o.batchSize = next.batchSize
+		}
+		if next.allowDiskUse != nil {
+			o.allowDiskUse = next.allowDiskUse
+		}
 		o.conditions = append(o.conditions, next.conditions...)
 		o.sort = append(o.sort, next.sort...)
 		o.projection = append(o.projection, next.projection...)
@@ -242,6 +268,9 @@ func mergeOptions(options []QueryOption) QueryOption {
 func (o QueryOption) validate() error {
 	if o.err != nil {
 		return o.err
+	}
+	if o.batchSize < 0 {
+		return fmt.Errorf("BatchSize 不能为负数")
 	}
 	if o.cacheTTL < 0 {
 		return fmt.Errorf("缓存 TTL 不能为负数")
@@ -338,7 +367,7 @@ func buildUpdate(ops []UpdateOp, protected ...string) (bson.D, error) {
 			return nil, fmt.Errorf("无效更新字段 %q", op.Path)
 		}
 		switch op.Operator {
-		case "$set", "$unset", "$inc", "$push", "$pull", "$addToSet", "$setOnInsert":
+		case "$set", "$unset", "$inc", "$mul", "$min", "$max", "$currentDate", "$pop", "$pullAll", "$bit", "$push", "$pull", "$addToSet", "$setOnInsert":
 		default:
 			return nil, fmt.Errorf("不支持的更新操作 %q", op.Operator)
 		}
@@ -388,3 +417,21 @@ func (w *Wrapper) WithSingleFlight(ttl ...time.Duration) *Wrapper {
 	}
 	return w
 }
+
+// Collation 设置语言排序/比较规则；创建查询快照时复制结构体。
+func (w *Wrapper) Collation(value options.Collation) *Wrapper { w.option.collation = &value; return w }
+
+// Hint 指定索引名或有序 BSON 索引键。参数来自可信业务代码，Build 后不应修改。
+func (w *Wrapper) Hint(value any) *Wrapper { w.option.hint = value; return w }
+
+// Let 为支持的 MongoDB 命令提供变量；不接收客户端任意表达式。
+func (w *Wrapper) Let(value bson.D) *Wrapper { w.option.let = append(bson.D(nil), value...); return w }
+
+// Comment 附加原生命令注释，不应放入敏感数据。
+func (w *Wrapper) Comment(value any) *Wrapper { w.option.comment = value; return w }
+
+// BatchSize 设置 Find/Walk 游标批次大小，0 使用默认值。
+func (w *Wrapper) BatchSize(value int32) *Wrapper { w.option.batchSize = value; return w }
+
+// AllowDiskUse 允许查询排序使用临时磁盘文件，依赖服务端版本。
+func (w *Wrapper) AllowDiskUse(value bool) *Wrapper { w.option.allowDiskUse = &value; return w }

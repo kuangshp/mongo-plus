@@ -41,6 +41,7 @@ func GenerateEntities(c schema.Config, entities []schema.Entity) ([]string, erro
 		preserve bool
 	}
 	outputs := []output{}
+	registered := []schema.Entity{}
 	seen := map[string]bool{}
 	for _, entity := range entities {
 		if err := entity.Normalize(c, strings.TrimSuffix(entity.Entity, "Entity")); err != nil {
@@ -49,6 +50,7 @@ func GenerateEntities(c schema.Config, entities []schema.Entity) ([]string, erro
 		if entity.ExternalModel && entity.ModelPackage == "" {
 			return nil, fmt.Errorf("手写实体缺少 ModelPackage")
 		}
+		registered = append(registered, entity)
 		base := strings.ToLower(strings.TrimSuffix(entity.Entity, "Entity"))
 		if seen[base] {
 			return nil, fmt.Errorf("生成文件名称冲突 %s", base)
@@ -81,6 +83,18 @@ func GenerateEntities(c schema.Config, entities []schema.Entity) ([]string, erro
 			outputs = append(outputs, output{filepath.Join(c.VoPath, base+"_vo.go"), vo, true})
 		}
 	}
+	// 启动时一次注册全部模型规则，DAL 无需依赖首次创建具体 Repository。
+	body := "// RegisterGeneratedCollections 在服务启动、创建 DAL 之前注册生成集合规则。\nfunc RegisterGeneratedCollections(db *mongoplus.Database) error {\nreturn db.RegisterCollections(\n"
+	for _, e := range registered {
+		runtime := e.Runtime()
+		body += fmt.Sprintf("mongoplus.CollectionConfig{Name:%q, ID:mongoplus.IDConfig{Type:mongoplus.IDType(%q),Generation:mongoplus.IDGeneration(%q),BlockSize:%d}, SoftDelete:%t,Timestamps:%t,TenantField:%q},\n", runtime.Name, runtime.ID.Type, runtime.ID.Generation, runtime.ID.BlockSize, runtime.SoftDelete, runtime.Timestamps, runtime.TenantField)
+	}
+	body += ")\n}\n"
+	data, err := source(c.PackageName("repository"), body, map[string]string{"mongoplus": "github.com/kuangshp/mongo-plus"})
+	if err != nil {
+		return nil, err
+	}
+	outputs = append(outputs, output{filepath.Join(c.RepoPath, "collections_gen.go"), data, false})
 	// 所有文件先渲染/格式校验；生成文件带标记，拒绝覆盖同名手写文件。
 	for _, out := range outputs {
 		old, err := os.ReadFile(out.path)

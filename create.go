@@ -66,10 +66,28 @@ func managedFieldDepth(v reflect.Value, path string, value any, depth int) (bool
 		if name == "" {
 			name = strings.ToLower(f.Name)
 		}
-		if name != path {
+		head, tail, nested := strings.Cut(path, ".")
+		if name != head {
 			continue
 		}
 		field := v.Field(i)
+		if nested {
+			if field.Kind() == reflect.Pointer && field.Type().Elem().Kind() == reflect.Struct {
+				copy := reflect.New(field.Type().Elem())
+				if !field.IsNil() {
+					copy.Elem().Set(field.Elem())
+				}
+				found, err := managedFieldDepth(copy.Elem(), tail, value, depth+1)
+				if found {
+					field.Set(copy)
+				}
+				return found, err
+			}
+			if field.Kind() == reflect.Struct {
+				return managedFieldDepth(field, tail, value, depth+1)
+			}
+			return true, fmt.Errorf("自动字段 %s 的父路径必须是结构体或结构体指针", path)
+		}
 		if value == nil {
 			if field.Kind() != reflect.Pointer && field.Kind() != reflect.Interface {
 				return true, fmt.Errorf("自动字段 %s 必须允许 null", path)
@@ -145,10 +163,15 @@ func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any)
 	}
 	if r.db != nil && r.db.autofill != nil {
 		for _, item := range r.db.autofill.OnCreate(ctx) {
-			if err := r.checkTenantAssignment(item.Path); err != nil {
+			if err := r.checkAutoFillAssignment(item.Path); err != nil {
 				return preparedCreate[T]{}, err
 			}
 			fields = setBSONField(fields, item.Path, item.Value)
+		}
+	}
+	if r.db != nil && r.db.sensitive != nil {
+		if err := r.db.sensitive.copyWriteFields(copy); err != nil {
+			return preparedCreate[T]{}, err
 		}
 	}
 	extra := bson.M{}
@@ -157,7 +180,16 @@ func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any)
 		if err != nil {
 			return preparedCreate[T]{}, err
 		}
+		if !found && r.db != nil && r.db.sensitive != nil {
+			found, err = r.db.sensitive.assignCreatePlain(copy, f.Key, f.Value)
+			if err != nil {
+				return preparedCreate[T]{}, err
+			}
+		}
 		if !found {
+			if strings.Contains(f.Key, ".") {
+				return preparedCreate[T]{}, fmt.Errorf("自动字段 %s 无法解析到实体嵌套路径", f.Key)
+			}
 			extra[f.Key] = f.Value
 		}
 	}

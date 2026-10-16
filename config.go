@@ -88,6 +88,16 @@ type Database struct {
 	autofill      *plugin.AutoFillPlugin
 	permission    *plugin.DataPermission
 	sensitive     *SensitivePlugin
+	rulesMu       sync.Mutex
+	rules         map[string]collectionPolicy
+}
+
+// collectionPolicy 记录仓储声明的集合规则，供 DAL 使用同一套租户、权限和逻辑删除。
+type collectionPolicy struct {
+	config      CollectionConfig
+	softDelete  bool
+	timestamps  bool
+	tenantField string
 }
 
 // Connect 建立连接并 Ping；连接池由官方 Client 管理。

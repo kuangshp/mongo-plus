@@ -1,9 +1,12 @@
 package mongoplus
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -14,13 +17,22 @@ import (
 
 type dalDatabaseKey struct{}
 type dalDatabaseBinding struct {
-	dal *DAL
-	db  *Database
+	dal       *DAL
+	db        *Database
+	selection *dalDatabaseSelection
+}
+
+// 一次 DAL 操作（包括分页的查询和计数）只允许 Provider 选择一次数据源。
+// 延迟选择保留文件解析错误的优先级，不在调用方 Context 中留下跨操作的选择结果。
+type dalDatabaseSelection struct {
+	once sync.Once
+	db   *Database
+	err  error
 }
 
 // WithDAL 在业务仓储扩展中绑定 DAL，沿用该仓储的数据源和 WithTx 事务。
 // 回调中把 queryCtx 传给 DAL 函数；不要保留回调 Context 或换回请求原 Context。
-// DAL 的文件条件仍由业务显式编写，不自动继承本仓储的租户/权限过滤。
+// DAL 执行时追加该仓储所属数据库上的租户、数据权限和逻辑删除。文件里的条件继续生效。
 func (r *Repository[T, K]) WithDAL(ctx context.Context, dal *DAL, fn func(queryCtx context.Context) error) error {
 	if dal == nil || fn == nil {
 		return fmt.Errorf("DAL 和仓储回调不能为空")
@@ -35,12 +47,18 @@ func (r *Repository[T, K]) WithDAL(ctx context.Context, dal *DAL, fn func(queryC
 	return fn(queryCtx)
 }
 
-// dalDatabase 在事务内固定数据库，避免 Provider 根据读写标记重新路由到其他连接。
+// dalDatabase 在操作和事务内固定数据库，隔离检查、执行和缓存失效必须使用同一实例。
 func dalDatabase(ctx context.Context, dal *DAL) (*Database, error) {
 	var db *Database
 	var err error
 	if binding, ok := ctx.Value(dalDatabaseKey{}).(dalDatabaseBinding); ok && binding.dal == dal {
 		db = binding.db
+		if binding.selection != nil {
+			binding.selection.once.Do(func() {
+				binding.selection.db, binding.selection.err = dal.provider.Get(ctx)
+			})
+			db, err = binding.selection.db, binding.selection.err
+		}
 	} else {
 		db, err = dal.provider.Get(ctx)
 	}
@@ -72,7 +90,7 @@ func DALNative(ctx context.Context, writes []string, fn func(context.Context, *m
 	if err != nil {
 		return err
 	}
-	return dal.run(ctx, "<native>", nil, func() error {
+	return dal.run(ctx, "<native>", nil, func(ctx context.Context) error {
 		db, err := dalDatabase(ctx, dal)
 		if err != nil {
 			return err
@@ -119,7 +137,7 @@ func dalWalk[T any](ctx context.Context, file string, consume func(T) error, arg
 	if err != nil {
 		return err
 	}
-	return dal.run(ctx, file, dalHookArgs(args, params), func() error {
+	return dal.run(ctx, file, dalHookArgs(args, params), func(ctx context.Context) error {
 		command, err := dal.command(file, args, params)
 		if err != nil {
 			return err
@@ -160,11 +178,15 @@ func dalWatch(ctx context.Context, file string, args []any, params map[string]an
 		return nil, err
 	}
 	var stream *mongo.ChangeStream
-	err = dal.run(ctx, file, dalHookArgs(args, params), func() error {
+	err = dal.run(ctx, file, dalHookArgs(args, params), func(ctx context.Context) error {
 		if mongo.SessionFromContext(ctx) != nil {
 			return fmt.Errorf("DALWatch 不支持 Session 或事务上下文")
 		}
 		command, err := dal.command(file, args, params)
+		if err != nil {
+			return err
+		}
+		command, err = applyDALScope(ctx, dal, command)
 		if err != nil {
 			return err
 		}
@@ -212,6 +234,10 @@ func dalPipeline(command dalCommand, writes bool) (mongo.Pipeline, error) {
 }
 
 func dalReadCursor(ctx context.Context, dal *DAL, command dalCommand) (*mongo.Cursor, error) {
+	command, err := applyDALScope(ctx, dal, command)
+	if err != nil {
+		return nil, err
+	}
 	collection, err := dalCollection(ctx, dal, command)
 	if err != nil {
 		return nil, err
@@ -258,6 +284,18 @@ func dalReadCursor(ctx context.Context, dal *DAL, command dalCommand) (*mongo.Cu
 					return nil, err
 				}
 				opts.SetBatchSize(value)
+			case "collation":
+				value, err := dalCollation(item.Value)
+				if err != nil {
+					return nil, err
+				}
+				opts.SetCollation(value)
+			case "let":
+				value, err := dalDocument(item.Value)
+				if err != nil {
+					return nil, err
+				}
+				opts.SetLet(value)
 			case "hint":
 				opts.SetHint(item.Value)
 			case "comment":
@@ -310,6 +348,18 @@ func dalAggregateOptions(doc bson.D) (*options.AggregateOptionsBuilder, error) {
 				return nil, err
 			}
 			opts.SetBatchSize(value)
+		case "collation":
+			value, err := dalCollation(item.Value)
+			if err != nil {
+				return nil, err
+			}
+			opts.SetCollation(value)
+		case "let":
+			value, err := dalDocument(item.Value)
+			if err != nil {
+				return nil, err
+			}
+			opts.SetLet(value)
 		case "hint":
 			opts.SetHint(item.Value)
 		case "comment":
@@ -326,6 +376,18 @@ func dalWatchOptions(doc bson.D) (*options.ChangeStreamOptionsBuilder, error) {
 	var resumeCount int
 	for _, item := range doc {
 		switch item.Key {
+		case "collation":
+			value, err := dalCollation(item.Value)
+			if err != nil {
+				return nil, err
+			}
+			opts.SetCollation(*value)
+		case "showExpandedEvents":
+			value, err := dalBool(item.Value)
+			if err != nil {
+				return nil, err
+			}
+			opts.SetShowExpandedEvents(value)
 		case "batchSize":
 			value, err := dalBatchSize(item.Value)
 			if err != nil {
@@ -459,4 +521,26 @@ func runDALWriteAggregate(ctx context.Context, dal *DAL, command dalCommand) (*D
 		return nil, err
 	}
 	return &DALExecResult{}, nil // MongoDB 不返回 $out/$merge 的影响行数。
+}
+
+// dalCollation 使用官方字段名，拒绝未知属性，避免拼写错误被静默忽略。
+func dalCollation(value any) (*options.Collation, error) {
+	doc, err := dalDocument(value)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := bson.MarshalExtJSON(doc, false, false)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var c options.Collation
+	if err = decoder.Decode(&c); err != nil {
+		return nil, fmt.Errorf("collation: %w", err)
+	}
+	if c.Locale == "" {
+		return nil, fmt.Errorf("collation.locale 不能为空")
+	}
+	return &c, nil
 }

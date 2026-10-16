@@ -6,9 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/kuangshp/mongo-plus/sf"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 // SFCacheWithErrors 是 SFCache 的可选增强能力，不破坏现有缓存适配器。
@@ -28,7 +34,7 @@ type SFCachePrefixDeleterWithErrors interface {
 var ErrCacheErrorReportingRequired = errors.New("共享缓存后端需要实现 SFCacheWithErrors")
 
 // CacheEvent 不携带缓存键、文档或参数，避免监控再次泄露敏感值。
-// Operation 为 get、set、invalidate、cleanup 或 recovered；recovered 的 Err 为 nil。
+// Operation 为 get、set、epoch、hit、miss、invalidate、cleanup 或 recovered；正常事件 Err 为 nil。
 type CacheEvent struct {
 	Operation  string
 	Collection string
@@ -78,8 +84,9 @@ func (d *Database) sharedCacheReady(ctx context.Context, store SFCache, collecti
 	return !pending || d.RetryCacheInvalidations(ctx) == nil
 }
 
-// PendingCacheInvalidations 返回当前进程待恢复的集合，便于健康检查和告警。
-// 队列只在内存中；进程退出后不能替代持久化消息或跨实例一致性协议。
+// PendingCacheInvalidations 返回当前进程尚未完成的共享缓存发布，便于健康检查和告警。
+// 已连接数据库时，读缓存使用 MongoDB 中的版本号；其他实例在版本号写入成功后不会再命中旧数据。
+// 版本号写入失败时，本进程会绕过缓存并重试。进程在写入成功前退出，其他实例仍可能看到旧缓存。
 func (d *Database) PendingCacheInvalidations() []string {
 	d.cache.mu.Lock()
 	defer d.cache.mu.Unlock()
@@ -201,6 +208,54 @@ func cleanupCachePrefix(ctx context.Context, db *Database, store SFCache, collec
 	}
 }
 
+const cacheEpochCollection = "__mongo_plus_cache_epochs"
+
+func cacheEpochID(db *Database, collection string) string {
+	return cacheNamespace(db) + "/" + collection
+}
+
+func cacheEpochColl(db *Database) *mongo.Collection {
+	return db.native.Collection(cacheEpochCollection, options.Collection().
+		SetWriteConcern(writeconcern.Majority()).
+		SetReadPreference(readpref.Primary()))
+}
+
+// bumpCacheEpoch 把集合版本写入所有实例共享的数据库。共享缓存发布失败时，其他实例仍按这个版本错过旧条目。
+func (d *Database) bumpCacheEpoch(ctx context.Context, collection string) (string, error) {
+	if d == nil || d.native == nil {
+		return "", nil
+	}
+	var doc struct {
+		Epoch int64 `bson:"epoch"`
+	}
+	err := cacheEpochColl(d).FindOneAndUpdate(ctx,
+		bson.D{{Key: "_id", Value: cacheEpochID(d, collection)}},
+		bson.D{{Key: "$inc", Value: bson.D{{Key: "epoch", Value: int64(1)}}}},
+		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After),
+	).Decode(&doc)
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(doc.Epoch, 10), nil
+}
+
+func (d *Database) currentCacheEpoch(ctx context.Context, collection string) (string, error) {
+	if d == nil || d.native == nil {
+		return "", nil
+	}
+	var doc struct {
+		Epoch int64 `bson:"epoch"`
+	}
+	err := cacheEpochColl(d).FindOne(ctx, bson.D{{Key: "_id", Value: cacheEpochID(d, collection)}}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return "0", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(doc.Epoch, 10), nil
+}
+
 func publishCacheInvalidation(ctx context.Context, db *Database, store SFCache, collection string) error {
 	db.cache.mu.Lock()
 	require := db.cache.limits.RequireErrorReporting
@@ -208,5 +263,13 @@ func publishCacheInvalidation(ctx context.Context, db *Database, store SFCache, 
 	if _, ok := store.(SFCacheWithErrors); require && !ok {
 		return ErrCacheErrorReportingRequired
 	}
-	return cacheSet(ctx, db, store, collection, sharedCachePrefix(db, collection)+"version", sf.RawValue(rand.Text()), 0)
+	version := rand.Text()
+	if db.native != nil {
+		epoch, err := db.bumpCacheEpoch(ctx, collection)
+		if err != nil {
+			return err
+		}
+		version = epoch
+	}
+	return cacheSet(ctx, db, store, collection, sharedCachePrefix(db, collection)+"version", sf.RawValue(version), 0)
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/kuangshp/mongo-plus/internal/settings"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"gopkg.in/yaml.v3"
 )
 
@@ -56,6 +57,7 @@ type Entity struct {
 	ID            *settings.IDConfig `json:"id,omitempty"`
 	SoftDelete    *bool              `json:"softDelete,omitempty"`
 	Timestamps    *bool              `json:"timestamps,omitempty"`
+	Options       *CollectionOptions `json:"options,omitempty"`
 	Fields        []Field            `json:"fields"`
 	Indexes       []Index            `json:"indexes,omitempty"`
 	Tenant        *Tenant            `json:"tenant,omitempty"`
@@ -75,22 +77,30 @@ type Field struct {
 	Unique       bool    `json:"unique,omitempty"`
 	Nullable     bool    `json:"nullable,omitempty"`
 	Fields       []Field `json:"fields,omitempty"`
+	Rules        bson.M  `json:"rules,omitempty"` // 附加 JSON Schema 约束，不覆盖推导的类型/对象结构。
+
 }
 
 // IndexField 保留复合索引键的顺序，不能用无序 map 替代。
 type IndexField struct {
 	Name  string `json:"name"`
-	Order int    `json:"order"`
+	Order any    `json:"order"` // 1/-1 或 text/hashed/2d/2dsphere。
 }
 
 // Index 定义复合/唯一索引；ActiveOnly 仅约束未逻辑删除的文档。
 type Index struct {
-	Name               string       `json:"name"`
-	Fields             []IndexField `json:"fields"`
-	Unique             bool         `json:"unique,omitempty"`
-	Sparse             bool         `json:"sparse,omitempty"`
-	ActiveOnly         bool         `json:"activeOnly,omitempty"`
-	ExpireAfterSeconds *int32       `json:"expireAfterSeconds,omitempty"`
+	Name                    string             `json:"name"`
+	Fields                  []IndexField       `json:"fields"`
+	Unique                  bool               `json:"unique,omitempty"`
+	Sparse                  bool               `json:"sparse,omitempty"`
+	ActiveOnly              bool               `json:"activeOnly,omitempty"`
+	ExpireAfterSeconds      *int32             `json:"expireAfterSeconds,omitempty"`
+	PartialFilterExpression bson.M             `json:"partialFilterExpression,omitempty"`
+	Collation               *options.Collation `json:"collation,omitempty"`
+	Hidden                  bool               `json:"hidden,omitempty"`
+	Weights                 bson.M             `json:"weights,omitempty"`
+	DefaultLanguage         string             `json:"defaultLanguage,omitempty"`
+	LanguageOverride        string             `json:"languageOverride,omitempty"`
 }
 
 // LoadConfig 读取配置；路径相对配置文件，环境变量只在连接配置中展开。
@@ -351,6 +361,9 @@ func (e *Entity) Normalize(c Config, filename string) error {
 			return err
 		}
 	}
+	if err := e.normalizeCollectionOptions(); err != nil {
+		return err
+	}
 	reserved := map[string]bool{"_id": true}
 	goReserved := map[string]bool{"ID": true}
 	if *e.SoftDelete {
@@ -394,16 +407,64 @@ func (e *Entity) Normalize(c Config, filename string) error {
 	addUnique(e.Fields, "")
 	names := map[string]bool{}
 	for _, index := range e.Indexes {
+		if index.Collation == nil && e.Options != nil {
+			index.Collation = e.Options.Collation
+		}
 		if index.Name == "" || strings.ContainsRune(index.Name, '\x00') || index.Name == "_id_" || names[index.Name] || len(index.Fields) == 0 {
 			return fmt.Errorf("索引名称为空、重复或无效: %q", index.Name)
 		}
 		names[index.Name] = true
 		seen := map[string]bool{}
-		for _, f := range index.Fields {
-			if !e.HasField(f.Name) || seen[f.Name] || (f.Order != 1 && f.Order != -1) {
+		for j, f := range index.Fields {
+			order, err := normalizeIndexOrder(f.Order)
+			if err != nil {
+				return fmt.Errorf("索引 %s: %w", index.Name, err)
+			}
+			index.Fields[j].Order = order
+			wildcard := f.Name == "$**" || (strings.HasSuffix(f.Name, ".$**") && e.HasField(strings.TrimSuffix(f.Name, ".$**")))
+			if (!e.HasField(f.Name) && !wildcard) || seen[f.Name] {
 				return fmt.Errorf("索引 %s 引用无效字段 %q", index.Name, f.Name)
 			}
 			seen[f.Name] = true
+		}
+		textFields := map[string]bool{}
+		specialSimple := false
+		for _, f := range index.Fields {
+			if f.Order == "text" {
+				textFields[f.Name] = true
+				specialSimple = true
+			}
+			if f.Order == "hashed" {
+				specialSimple = true
+				if index.Unique {
+					return fmt.Errorf("hashed 索引不能设置 unique")
+				}
+			}
+		}
+		if len(textFields) == 0 && (len(index.Weights) > 0 || index.DefaultLanguage != "" || index.LanguageOverride != "") {
+			return fmt.Errorf("文本权重/语言属性只适用于 text 索引")
+		}
+		if specialSimple && index.Collation != nil && index.Collation.Locale != "simple" {
+			return fmt.Errorf("text/hashed 索引需要 simple Collation")
+		}
+		for name, value := range index.Weights {
+			if !textFields[name] && !textFields["$**"] {
+				return fmt.Errorf("权重 %s 未对应 text 字段", name)
+			}
+			weight, err := normalizeIndexWeight(value)
+			if err != nil {
+				return err
+			}
+			index.Weights[name] = weight
+		}
+		if index.ActiveOnly && len(index.PartialFilterExpression) > 0 {
+			return fmt.Errorf("索引 %s 不能同时配置 activeOnly 和 partialFilterExpression", index.Name)
+		}
+		if index.Sparse && (index.ActiveOnly || len(index.PartialFilterExpression) > 0) {
+			return fmt.Errorf("索引 %s 不能同时配置 sparse 和 partialFilterExpression", index.Name)
+		}
+		if index.Collation != nil && index.Collation.Locale == "" {
+			return fmt.Errorf("索引 collation.locale 不能为空")
 		}
 		if index.Sparse && index.ActiveOnly {
 			return fmt.Errorf("索引 %s 不能同时设置 sparse 和 activeOnly", index.Name)
@@ -411,7 +472,7 @@ func (e *Entity) Normalize(c Config, filename string) error {
 		if index.ActiveOnly && !*e.SoftDelete {
 			return fmt.Errorf("activeOnly 索引需要启用逻辑删除")
 		}
-		if index.ExpireAfterSeconds != nil && (*index.ExpireAfterSeconds < 0 || len(index.Fields) != 1 || e.fieldType(index.Fields[0].Name) != "datetime") {
+		if index.ExpireAfterSeconds != nil && (*index.ExpireAfterSeconds < 0 || len(index.Fields) != 1 || e.fieldType(index.Fields[0].Name) != "datetime" || (index.Fields[0].Order != 1 && index.Fields[0].Order != -1)) {
 			return fmt.Errorf("TTL 索引需要一个 datetime 字段和非负秒数")
 		}
 	}
@@ -443,6 +504,13 @@ func normalizeFields(fields []Field, names, goNames map[string]bool) error {
 			return fmt.Errorf("Go 字段名称无效或冲突 %q", f.GoName)
 		}
 		goNames[f.GoName] = true
+		for key := range f.Rules {
+			switch key {
+			case "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength", "pattern", "minItems", "maxItems", "uniqueItems", "minProperties", "maxProperties", "description":
+			default:
+				return fmt.Errorf("字段 %s 不支持附加校验 %s", f.Name, key)
+			}
+		}
 		base := strings.TrimPrefix(f.Type, "[]")
 		switch base {
 		case "string", "int32", "int64", "bool", "float64", "objectId", "datetime", "decimal128", "bytes", "json", "object":
@@ -551,7 +619,7 @@ func properties(fields []Field) (bson.D, []string) {
 	required := []string{}
 	for _, f := range fields {
 		rule := fieldRule(f)
-		if f.Comment != "" {
+		if f.Comment != "" && f.Rules["description"] == nil {
 			rule = append(rule, bson.E{Key: "description", Value: f.Comment})
 		}
 		props = append(props, bson.E{Key: f.Name, Value: rule})
@@ -577,6 +645,7 @@ func fieldRule(f Field) bson.D {
 		copy := f
 		copy.Type = base
 		copy.Nullable = false
+		copy.Rules = nil
 		rule = append(rule, bson.E{Key: "items", Value: fieldRule(copy)})
 	} else if base == "object" {
 		props, required := properties(f.Fields)
@@ -585,6 +654,7 @@ func fieldRule(f Field) bson.D {
 			rule = append(rule, bson.E{Key: "required", Value: required})
 		}
 	}
+	rule = append(rule, sortedDocument(f.Rules)...)
 	return rule
 }
 

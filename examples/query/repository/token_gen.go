@@ -15,6 +15,13 @@ type defaultTokenRepository struct {
 }
 
 type iDefaultTokenRepository interface {
+	// MongoDB 原子复合操作及去重/估计统计。
+	FindOneAndUpdate(ctx context.Context, query mongoplus.QueryOption, modify mongoplus.ModifyOptions, updates ...mongoplus.UpdateOption) (*model.TokenEntity, error)
+	FindOneAndDelete(ctx context.Context, query mongoplus.QueryOption, opts ...mongoplus.DeleteOption) (*model.TokenEntity, error)
+	FindOneAndReplace(ctx context.Context, query mongoplus.QueryOption, replacement *model.TokenEntity, modify mongoplus.ModifyOptions) (*model.TokenEntity, error)
+	Distinct(ctx context.Context, path string, query ...mongoplus.QueryOption) ([]any, error)
+	EstimatedDocumentCount(ctx context.Context) (int64, error)
+
 	// SensitiveEq 按当前实体的显式配置或标签构造盲索引等值条件。
 	SensitiveEq(logical, value string) mongoplus.Condition
 	// WithTx 绑定本库事务回调的 txCtx，返回保留业务扩展的副本；必须使用返回值。
@@ -208,4 +215,24 @@ func newDefaultTokenRepository(db ...*mongoplus.Database) *defaultTokenRepositor
 			TenantField: "",    // 租户 BSON 字段；空字符串表示未配置集合级租户字段。
 		}),
 	}
+}
+
+func (r *defaultTokenRepository) FindOneAndUpdate(ctx context.Context, query mongoplus.QueryOption, modify mongoplus.ModifyOptions, updates ...mongoplus.UpdateOption) (*model.TokenEntity, error) {
+	return r.Repository.FindOneAndUpdate(ctx, query, modify, updates...)
+}
+
+func (r *defaultTokenRepository) FindOneAndDelete(ctx context.Context, query mongoplus.QueryOption, opts ...mongoplus.DeleteOption) (*model.TokenEntity, error) {
+	return r.Repository.FindOneAndDelete(ctx, query, opts...)
+}
+
+func (r *defaultTokenRepository) FindOneAndReplace(ctx context.Context, query mongoplus.QueryOption, replacement *model.TokenEntity, modify mongoplus.ModifyOptions) (*model.TokenEntity, error) {
+	return r.Repository.FindOneAndReplace(ctx, query, replacement, modify)
+}
+
+func (r *defaultTokenRepository) Distinct(ctx context.Context, path string, query ...mongoplus.QueryOption) ([]any, error) {
+	return r.Repository.Distinct(ctx, path, query...)
+}
+
+func (r *defaultTokenRepository) EstimatedDocumentCount(ctx context.Context) (int64, error) {
+	return r.Repository.EstimatedDocumentCount(ctx)
 }

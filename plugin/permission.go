@@ -15,8 +15,10 @@ type DataPermissionInjectFn func(collection string) (bson.D, error)
 // DataPermissionConfig 配置不参与数据权限的集合。
 type DataPermissionConfig struct {
 	ExcludeCollections []string
-	// Strict 开启后，未排除的集合缺少注入函数时返回 ErrDataPermissionRequired。
-	// 默认 false 兼容旧项目；面向严格权限的服务应显式开启。
+	// AllowMissing 恢复旧行为：未排除的集合没有注入函数时不加条件。
+	// 默认缺少注入函数返回 ErrDataPermissionRequired。
+	AllowMissing bool
+	// Strict 保留给已有调用。缺省即为严格；要放行缺少注入函数的请求，设置 AllowMissing。
 	Strict bool
 }
 
@@ -34,7 +36,7 @@ type dataPermissionSkipKey struct{}
 
 // NewDataPermission 创建数据权限插件。
 func NewDataPermission(cfg DataPermissionConfig) *DataPermission {
-	state := &DataPermission{excluded: map[string]struct{}{}, strict: cfg.Strict}
+	state := &DataPermission{excluded: map[string]struct{}{}, strict: !cfg.AllowMissing}
 	state.AddExclude(cfg.ExcludeCollections...)
 	return state
 }

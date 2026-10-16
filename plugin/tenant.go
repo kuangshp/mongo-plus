@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -174,8 +175,18 @@ func tenantSpecs[T comparable](cfg TenantConfig[T], fields []TenantFieldConfig[T
 	seen := map[string]struct{}{}
 	for _, item := range fields {
 		name := strings.TrimSpace(item.Field)
-		if name == "" {
-			return nil, fmt.Errorf("租户字段名不能为空")
+		if !field.ValidPath(name) {
+			return nil, fmt.Errorf("无效租户字段 %q", name)
+		}
+		for _, reserved := range []string{"_id", "deleted_at", "created_at", "updated_at"} {
+			if name == reserved || strings.HasPrefix(name, reserved+".") {
+				return nil, fmt.Errorf("租户字段不能覆盖保留字段 %q", name)
+			}
+		}
+		for existing := range seen {
+			if strings.HasPrefix(name, existing+".") || strings.HasPrefix(existing, name+".") {
+				return nil, fmt.Errorf("租户字段路径冲突 %s / %s", existing, name)
+			}
 		}
 		if _, ok := seen[name]; ok {
 			continue
@@ -295,7 +306,7 @@ func (p *TenantPlugin) Conditions(ctx context.Context, collection, fallback stri
 		if !ok {
 			return nil, false, ErrTenantRequired
 		}
-		condition := field.New[any](item.name).Eq(value)
+		condition := TenantCondition(item.name, value)
 		if condition.Err != nil {
 			return nil, false, condition.Err
 		}
@@ -330,8 +341,13 @@ func (p *TenantPlugin) CreateValues(ctx context.Context, collection, fallback st
 	values := make(map[string]any, len(documents))
 	for _, document := range documents {
 		value := document[0].Value
-		if eq, ok := value.(bson.D); ok && len(eq) == 1 {
-			value = eq[0].Value
+		if eq, ok := value.(bson.D); ok {
+			for _, op := range eq {
+				if op.Key == "$eq" {
+					value = op.Value
+					break
+				}
+			}
 		}
 		values[document[0].Key] = value
 	}
@@ -340,4 +356,17 @@ func (p *TenantPlugin) CreateValues(ctx context.Context, collection, fallback st
 
 func isZero[T comparable](value T) bool {
 	return reflect.ValueOf(value).IsZero()
+}
+
+// TenantCondition 对字符串租户增加独立于 Collation 的精确正则约束，防止业务排序规则扩大授权范围。
+func TenantCondition(path string, value any) field.Condition {
+	condition := field.New[any](path).Eq(value)
+	if condition.Err != nil || value == nil {
+		return condition
+	}
+	if reflect.ValueOf(value).Kind() == reflect.String {
+		exact := bson.E{Key: "$regex", Value: bson.Regex{Pattern: "\\A" + regexp.QuoteMeta(reflect.ValueOf(value).String()) + "\\z"}}
+		condition.Document[0].Value = append(condition.Document[0].Value.(bson.D), exact)
+	}
+	return condition
 }

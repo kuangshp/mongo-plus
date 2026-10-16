@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"reflect"
 	"sync"
 	"time"
 
@@ -161,7 +161,9 @@ func SFNoCache[T any](fn func() (T, error), fnName string, args map[string]any) 
 }
 
 func flight[T any](key string, fn func() (T, error), store func(T)) (T, error) {
-	result, err, _ := flights.Do(key, func() (any, error) {
+	// 同名方法的不同返回类型不能加入同一个在途结果。
+	resultType := reflect.TypeFor[T]()
+	result, err, _ := flights.Do(key+":"+typeIdentity(resultType), func() (any, error) {
 		value, err := fn()
 		if err != nil {
 			return nil, err
@@ -169,24 +171,31 @@ func flight[T any](key string, fn func() (T, error), store func(T)) (T, error) {
 		if store != nil {
 			store(value)
 		}
-		return value, nil
+		return flightValue[T]{value}, nil
 	})
 	if err != nil {
 		var zero T
 		return zero, err
 	}
-	value, ok := result.(T)
+	value, ok := result.(flightValue[T])
 	if !ok {
 		var zero T
 		return zero, fmt.Errorf("缓存类型与 %T 不一致", zero)
 	}
-	return value, nil
+	return value.value, nil
 }
+
+// 保留接口类型的 nil 结果；直接把 nil 放进 any 后再断言会丢失其静态类型。
+type flightValue[T any] struct{ value T }
 
 func decode[T any](value any, ok bool) (T, bool) {
 	if !ok {
 		var zero T
 		return zero, false
+	}
+	if value == nil && reflect.TypeFor[T]().Kind() == reflect.Interface {
+		var zero T
+		return zero, true
 	}
 	if raw, isRaw := value.(RawValue); isRaw {
 		var decoded T
@@ -226,7 +235,7 @@ func SFInvalidatePrefixes(fnNames ...string) {
 	prefixes := make([]string, 0, len(fnNames))
 	for _, name := range fnNames {
 		if name != "" {
-			prefixes = append(prefixes, "sf:"+name)
+			prefixes = append(prefixes, "sf:v2:"+name)
 		}
 	}
 	if len(prefixes) == 0 {
@@ -245,19 +254,18 @@ func SFInvalidatePrefixes(fnNames ...string) {
 }
 
 func cacheKey(fnName string, args map[string]any) (string, error) {
-	keys := make([]string, 0, len(args))
-	for key := range args {
-		keys = append(keys, key)
+	// 保留原有 JSON 错误检查，再使用递归类型编码，避免 ObjectID/string、日期/string 等碰撞。
+	if _, err := json.Marshal(args); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidCacheArgs, err)
 	}
-	sort.Strings(keys)
-	ordered := make([]any, 0, len(keys)*2)
-	for _, key := range keys {
-		ordered = append(ordered, key, args[key])
+	typed, err := typedArgs(reflect.ValueOf(args), 0)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidCacheArgs, err)
 	}
-	encoded, err := json.Marshal(ordered)
+	encoded, err := json.Marshal(typed)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidCacheArgs, err)
 	}
 	sum := sha256.Sum256(encoded)
-	return "sf:" + fnName + ":" + hex.EncodeToString(sum[:]), nil
+	return "sf:v2:" + fnName + ":" + hex.EncodeToString(sum[:]), nil
 }

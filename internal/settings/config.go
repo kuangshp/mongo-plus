@@ -82,7 +82,7 @@ type CollectionConfig struct {
 // ReservedCollection 保护序列表和迁移控制集合，避免被普通业务仓储误修改。
 func ReservedCollection(name string) bool {
 	switch name {
-	case "__mongo_plus_sequences", "__mongo_plus_migrations", "__mongo_plus_migration_locks":
+	case "__mongo_plus_sequences", "__mongo_plus_migrations", "__mongo_plus_migration_locks", "__mongo_plus_cache_epochs":
 		return true
 	}
 	return false

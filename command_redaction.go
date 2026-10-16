@@ -27,8 +27,8 @@ func sensitiveLogPath(path string, additional []string) bool {
 // 控制递归深度及节点数，避免大文档在日志处理时无限展开。
 func safeCommand(raw bson.Raw, cfg LogConfig) string {
 	remaining := 2048
-	var walk func(bson.RawValue, string, int) any
-	walk = func(value bson.RawValue, path string, depth int) any {
+	var walk func(bson.RawValue, string, int, bool) any
+	walk = func(value bson.RawValue, path string, depth int, expression bool) any {
 		remaining--
 		if remaining < 0 || depth > 32 {
 			return "[truncated]"
@@ -36,6 +36,9 @@ func safeCommand(raw bson.Raw, cfg LogConfig) string {
 		if sensitiveLogPath(path, cfg.SensitiveFields) {
 			return "[REDACTED]"
 		}
+		// 表达式参数不一定以敏感字段名作为键，不能靠键名判断常量是否安全。
+		// 保留操作符结构，保守隐藏表达式、命令变量和脚本中的全部标量。
+		expression = expression || expressionLogPath(path)
 		switch value.Type {
 		case bson.TypeEmbeddedDocument:
 			elements, err := value.Document().Elements()
@@ -48,7 +51,7 @@ func safeCommand(raw bson.Raw, cfg LogConfig) string {
 					result = append(result, bson.E{Key: "...", Value: "[truncated]"})
 					break
 				}
-				result = append(result, bson.E{Key: e.Key(), Value: walk(e.Value(), path+"."+e.Key(), depth+1)})
+				result = append(result, bson.E{Key: e.Key(), Value: walk(e.Value(), path+"."+e.Key(), depth+1, expression)})
 			}
 			return result
 		case bson.TypeArray:
@@ -62,13 +65,13 @@ func safeCommand(raw bson.Raw, cfg LogConfig) string {
 					result = append(result, "[truncated]")
 					break
 				}
-				result = append(result, walk(item, path, depth+1))
+				result = append(result, walk(item, path, depth+1, expression))
 			}
 			return result
 		case bson.TypeBinary:
 			return "[REDACTED]"
 		}
-		if cfg.HideParameters && !logCommandTarget(path) {
+		if expression || cfg.HideParameters && !logCommandTarget(path) {
 			return "?"
 		}
 		if text, ok := value.StringValueOK(); ok {
@@ -90,13 +93,23 @@ func safeCommand(raw bson.Raw, cfg LogConfig) string {
 			result = append(result, bson.E{Key: "...", Value: "[truncated]"})
 			break
 		}
-		result = append(result, bson.E{Key: e.Key(), Value: walk(e.Value(), e.Key(), 0)})
+		result = append(result, bson.E{Key: e.Key(), Value: walk(e.Value(), e.Key(), 0, false)})
 	}
 	encoded, err := bson.MarshalExtJSON(result, false, false)
 	if err != nil {
 		return "[command unavailable]"
 	}
 	return truncateCommand(singleLine(string(encoded)), cfg.MaxLength)
+}
+
+func expressionLogPath(path string) bool {
+	parts := strings.Split(path, ".")
+	switch parts[len(parts)-1] {
+	case "$expr", "let", "$let", "$literal", "$const", "$where", "$function", "$accumulator",
+		"$project", "$group", "$addFields", "$set", "$replaceRoot", "$replaceWith", "$redact", "$bucket", "$bucketAuto", "$setWindowFields":
+		return true
+	}
+	return false
 }
 
 func logCommandTarget(path string) bool {
