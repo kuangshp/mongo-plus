@@ -81,10 +81,13 @@ type Database struct {
 	cacheStore sf.SFCache
 	sequences  sync.Map // 集合名 -> 本包装器共享的预分配号码区间。
 	Observer   Observer
-	tenant     *plugin.TenantPlugin
-	autofill   *plugin.AutoFillPlugin
-	permission *plugin.DataPermission
-	sensitive  *SensitivePlugin
+	// CacheObserver 接收共享缓存错误及失效恢复事件；启动时设置，不要并发修改。
+	// 回调应快速返回，不应同步执行缓存读写或再次调用失效重试。
+	CacheObserver func(context.Context, CacheEvent)
+	tenant        *plugin.TenantPlugin
+	autofill      *plugin.AutoFillPlugin
+	permission    *plugin.DataPermission
+	sensitive     *SensitivePlugin
 }
 
 // Connect 建立连接并 Ping；连接池由官方 Client 管理。
@@ -151,7 +154,28 @@ func DefaultDB() *Database { return defaultDatabase.Load() }
 func (d *Database) Native() *mongo.Database { return d.native }
 
 // Close 关闭 Client；由创建并拥有连接的启动入口调用。
-func (d *Database) Close(ctx context.Context) error { return d.native.Client().Disconnect(ctx) }
+func (d *Database) Close(ctx context.Context) error {
+	d.cache.mu.Lock()
+	d.cache.closed = true
+	if d.cache.retryStop != nil {
+		close(d.cache.retryStop)
+		d.cache.retryStop = nil
+	}
+	done := d.cache.retryDone
+	d.cache.mu.Unlock()
+	var waitErr error
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	}
+	if d.native == nil {
+		return waitErr
+	}
+	return errors.Join(waitErr, d.native.Client().Disconnect(ctx))
+}
 
 type tenantKey struct{}
 type actorKey struct{}

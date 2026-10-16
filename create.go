@@ -145,6 +145,9 @@ func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any)
 	}
 	if r.db != nil && r.db.autofill != nil {
 		for _, item := range r.db.autofill.OnCreate(ctx) {
+			if err := r.checkTenantAssignment(item.Path); err != nil {
+				return preparedCreate[T]{}, err
+			}
 			fields = setBSONField(fields, item.Path, item.Value)
 		}
 	}

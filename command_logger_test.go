@@ -44,7 +44,7 @@ func TestCommandLoggerLevelsAndWriteErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			monitor, err := NewCommandLogger(LogConfig{Level: tc.level, Writer: &out})
+			monitor, err := NewCommandLogger(LogConfig{Level: tc.level, Writer: &out, IncludeErrorDetails: true})
 			if err != nil {
 				t.Fatal(err)
 			}

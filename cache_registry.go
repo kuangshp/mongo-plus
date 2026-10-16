@@ -1,8 +1,10 @@
 package mongoplus
 
 import (
+	"context"
 	"runtime"
 	"sync"
+	"time"
 	"weak"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -64,6 +66,18 @@ func unregisterCache(registration cacheRegistration) {
 
 // invalidatePeers 在操作返回前通知同 Client 同库的所有存活包装器。
 func (d *Database) invalidatePeers(collection string, disable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = d.invalidatePeersContext(ctx, collection, disable)
+}
+
+// InvalidateCacheContext 显式返回共享缓存版本发布错误，适用于原生写入及运维恢复。
+// 数据库写入本身可能已经成功；不要因缓存错误盲目重放业务写入。
+func (d *Database) InvalidateCacheContext(ctx context.Context, collection string) error {
+	return d.invalidatePeersContext(ctx, collection, false)
+}
+
+func (d *Database) invalidatePeersContext(ctx context.Context, collection string, disable bool) error {
 	peers := []*Database{d}
 	if d.native != nil {
 		cacheRegistry.Lock()
@@ -97,6 +111,7 @@ func (d *Database) invalidatePeers(collection string, disable bool) {
 		}
 		c.mu.Unlock()
 	}
-	deleteSharedCache(peers, collection)
+	err := deleteSharedCache(ctx, peers, collection)
 	runtime.KeepAlive(d)
+	return err
 }

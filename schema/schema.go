@@ -133,7 +133,8 @@ func LoadConfig(path string) (Config, error) {
 func (c Config) HasMongoDB() bool {
 	m := c.MongoDB
 	return m.URI != "" || m.Database != "" || m.MaxPoolSize != 0 || m.Timeout != 0 ||
-		m.Log.Level != "" || m.Log.SlowThresholdMS != 0 || m.Log.Colorful || m.Log.Writer != nil
+		m.Log.Level != "" || m.Log.SlowThresholdMS != 0 || m.Log.Colorful || m.Log.Writer != nil ||
+		m.Log.HideParameters || len(m.Log.SensitiveFields) > 0 || m.Log.MaxLength != 0 || m.Log.IncludeErrorDetails
 }
 
 // Normalize 补全路径和全局默认；逻辑删除、时间字段默认开启。
@@ -309,7 +310,7 @@ func (e *Entity) Normalize(c Config, filename string) error {
 			e.Collection += "s"
 		}
 	}
-	if e.Collection == "" || strings.ContainsAny(e.Collection, "\x00$") || strings.HasPrefix(e.Collection, "system.") || e.Collection == "__mongo_plus_sequences" {
+	if e.Collection == "" || strings.ContainsAny(e.Collection, "\x00$") || strings.HasPrefix(e.Collection, "system.") || settings.ReservedCollection(e.Collection) {
 		return fmt.Errorf("无效集合名称 %q", e.Collection)
 	}
 	id := c.ID

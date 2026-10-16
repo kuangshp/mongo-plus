@@ -1,0 +1,55 @@
+{
+  "startedAt": "2026-10-16T02:54:29.75749Z",
+  "libraryVersion": "v0.0.2",
+  "goVersion": "go1.26.9",
+  "platform": "darwin/arm64",
+  "cpus": 12,
+  "database": "mongo_plus_loadtest_6ad191e394cadba1a39234fb",
+  "seed": 10000,
+  "concurrency": 16,
+  "readPercent": 80,
+  "payloadBytes": 256,
+  "warmupSeconds": 2,
+  "durationSeconds": 10.000725958,
+  "qps": 14117.375137857967,
+  "errorRate": 0,
+  "all": {
+    "count": 141184,
+    "errors": 0,
+    "p50Ms": 0.8262678453199236,
+    "p95Ms": 2.840079728769798,
+    "p99Ms": 4.1044287143026885,
+    "maxMs": 29.355208,
+    "meanMs": 1.1318023825079335
+  },
+  "reads": {
+    "count": 113058,
+    "errors": 0,
+    "p50Ms": 0.7576909549283818,
+    "p95Ms": 1.359834832857737,
+    "p99Ms": 2.0522143571513443,
+    "maxMs": 13.4535,
+    "meanMs": 0.8145172442109369
+  },
+  "writes": {
+    "count": 28126,
+    "errors": 0,
+    "p50Ms": 2.237955625560202,
+    "p95Ms": 4.01647927064715,
+    "p99Ms": 6.610142762559389,
+    "maxMs": 29.355208,
+    "meanMs": 2.407192525634643
+  },
+  "peakHeapAllocBytes": 2725736,
+  "endHeapAllocBytes": 1836192,
+  "endRuntimeSysBytes": 23677192,
+  "peakGoroutines": 42,
+  "gcCount": 2813,
+  "passed": true,
+  "failures": [],
+  "notes": [
+    "Synthetic primary-key read/update workload; cache disabled; not a business capacity guarantee.",
+    "Latency percentiles are histogram upper bounds with less than approximately 2.2% bucket error.",
+    "Heap metrics include the load generator; RuntimeSys is not process RSS. Database is dropped after the run."
+  ]
+}

@@ -762,10 +762,11 @@ ctx = context.WithValue(ctx, mongoplus.CtxOperatorKey2, "ann")
 
 ### 数据权限
 
-数据权限不内置“本部门 / 仅本人”规则。中间件按集合返回 BSON 条件，查询、更新、删除以及走仓储过滤的关联都会带上。上下文里没有注入函数时不加条件。
+数据权限不内置“本部门 / 仅本人”规则。中间件按集合返回 BSON 条件，查询、更新、删除以及走仓储过滤的关联都会带上。默认兼容模式下，缺少注入函数时不加条件；严格权限服务应开启 `Strict: true`，此时未排除的集合缺少权限上下文会返回 `ErrDataPermissionRequired`。鉴权中间件可先用 `RequireDataPermission(ctx)` 检查注入，说明见[生产接入](docs/production.md#租户与严格权限)。
 
 ```go
 err := mongoplus.RegisterDataPermission(db, mongoplus.DataPermissionConfig{
+    Strict: true,
     ExcludeCollections: []string{"sys_config"},
 })
 ctx = mongoplus.WithDataPermission(ctx, func(collection string) (bson.D, error) {
@@ -848,7 +849,9 @@ db.UseCache(sharedCache) // 也可以在启动时统一 RegisterCache(sharedCach
 err := db.ConfigureCache(mongoplus.CacheConfig{Namespace: "orders-prod-primary"})
 ```
 
-仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。`SFInvalidatePrefix` 可以按方法名回收该前缀下的旧条目；后端没有批量删除时，这些条目按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。后端读写失败时 SFCache 接口不能报告失效错误，因此仍需实时强一致的场景应使用 Disabled；外部程序写入后也必须通知失效。共享缓存的总容量由后端管理，单条结果仍遵守 MaxEntryBytes 限制。
+仓储共享缓存使用 BSON 序列化，并按结果类型区分缓存键。写入通过切换集合版本使旧缓存失效；失效后的新请求不会加入旧 SingleFlight，旧在途查询即使稍后完成也不能成为当前版本的缓存。版本键使用 `Set(..., 0)` 永久保存；后端必须保留 RawValue 字节，且支持 TTL 为 0 表示不过期。旧条目可通过可选前缀删除回收，或者按查询 TTL 过期。版本键被逐出时会生成新的随机版本，避免重新命中旧条目。
+
+生产适配器应实现 `SFCacheWithErrors`，并开启 `RequireErrorReporting`。Get/Set 故障会触发 `CacheObserver`；失效失败进入队列，当前包装器绕过共享缓存并自动重试，支持 `PendingCacheInvalidations`、`RetryCacheInvalidations` 和显式返回错误的 `InvalidateCacheContext`。这不构成跨进程强一致协议，进程崩溃也会丢失内存恢复队列；实时强一致场景仍应设置 Disabled，外部程序写入后也必须通知失效。配置、错误接口和恢复语义见[生产接入与安全配置](docs/production.md)。共享缓存总容量由后端管理，单条结果仍遵守 MaxEntryBytes 限制。
 
 可在启动时调整缓存容量，缓存仍由每次查询的 WithCache 显式开启：
 
@@ -874,6 +877,8 @@ db, err := mongoplus.Connect(ctx, mongoplus.Config{
         Level:           mongoplus.LogInfo, // info 全部命令，warn 慢命令和错误，error 仅错误。
         SlowThresholdMS: 200,               // 0 使用 200ms。
         Colorful:        true,              // 可选 ANSI 颜色；默认 false。
+        HideParameters:  true,              // 生产建议开启，隐藏参数值；false 时常见敏感字段仍脱敏。
+        MaxLength:       4096,              // 命令内容字节上限；0 使用 4096。
     },
 })
 if err != nil { return err }
@@ -889,16 +894,22 @@ mongodb:
     level: info
     slowThresholdMs: 200
     colorful: true
+    hideParameters: true
+    sensitiveFields: ["identity_number"]
+    maxLength: 4096
+    includeErrorDetails: false
 ```
 
 输出格式如下（实际命令还可能包含 Session 等驱动字段）：
 
 ```text
 2026/10/16 10:20:30 /work/shop/internal/service/user.go:77
-[2.135ms] [rows:1] shop.find {"find":"users","filter":{"name":"Alice"},"limit":1}
+[2.135ms] [rows:1] shop.find {"find":"users","filter":{"name":"?"},"limit":"?"}
 ```
 
 默认 `level` 为空或 `silent` 时关闭日志；日志默认写入标准输出。可通过 Go 配置的 `Writer` 接入输出流，例如 `Writer: log.Writer()` 复用项目标准库日志的目标。go-zero 模板已包含 `MongoConfig.Log` 配置，生成服务后修改对应 YAML 即可；独立的命令日志不自动受服务顶层 `Log` 或 `LogRotation` 控制。
+
+密码、令牌、手机号、邮箱等常见字段会默认脱敏，`SensitiveFields` 可追加业务字段/点路径。错误详情默认隐藏，避免数据库错误回显查询值；仅受控诊断时开启 `IncludeErrorDetails`。命令内容按 `MaxLength` 限制并保留 UTF-8 边界，配置属性见[日志安全](docs/production.md#命令日志安全)。
 
 使用已有官方驱动连接时，需要在创建 Client 前安装监控器：
 
@@ -1396,3 +1407,5 @@ err = mongoplus.DALWithTx(ctx, func(txCtx context.Context) error {
 大批量写入使用 CreateBatch，高频数字主键按需启用 BlockSize；大集合分页优先使用 FindCursorPage，大量导出使用 Walk。关联字段应建立合适的索引，并通过 Select、Limit 控制一对多结果大小；ScanByPage 使用两个独立聚合游标，单条输出文档仍遵循 MongoDB 服务端大小限制。
 
 生产使用前应完成真实数据量与目标并发的压测、超时与故障恢复验证。仓库持续集成包含真实三节点副本集、竞态检查、Gin/goctl 集成、主节点切换后读写与事务恢复、漏洞扫描；这些检查不替代业务环境的容量和长期稳定性验证。详细命令与限制见 [性能验证与生产接入](docs/performance.md)。
+
+v0.0.2 增加租户字段更新保护、权限 Strict 模式、缓存错误恢复及独立版本迁移。迁移执行锁、SHA256 历史、失败恢复、显式 Down 和分批回填，以及版本发布方式，统一见[生产接入与安全配置](docs/production.md)。版本发布状态见[更新记录](CHANGELOG.md)。

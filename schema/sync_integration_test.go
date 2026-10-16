@@ -2,9 +2,11 @@ package schema
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/kuangshp/mongo-plus/internal/testutil"
+	"github.com/kuangshp/mongo-plus/migration"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -58,6 +60,44 @@ func TestSchemaApplyAndIdempotency(t *testing.T) {
 	}
 	if _, ok := old["mobile"]; ok {
 		t.Fatal("同步修改了历史数据")
+	}
+}
+
+func TestSchemaApplySharesMigrationLock(t *testing.T) {
+	db := testutil.Database(t)
+	ctx := context.Background()
+	c := testConfig(t, map[string]string{"user": `{"fields":[{"name":"name","type":"string"}]}`})
+	entities, err := LoadEntities(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	var saved context.Context
+	steps := []migration.Migration{{Version: "2026101601", Checksum: migration.Checksum([]byte("schema v1")), Up: func(lockedCtx context.Context, _ *mongo.Database) error {
+		saved = lockedCtx
+		if _, err := Apply(lockedCtx, db, entities); err != nil {
+			return err
+		}
+		close(started)
+		<-release
+		return nil
+	}}}
+	go func() { done <- migration.Run(ctx, db, steps, migration.Options{}) }()
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatal("版本迁移未能复用锁", err)
+	}
+	if _, err := Apply(ctx, db, entities); !errors.Is(err, migration.ErrLocked) {
+		t.Error("旧 schema.Apply 绕过了迁移锁", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(saved, db, entities); !errors.Is(err, migration.ErrLockLost) {
+		t.Fatal("复用了已退出的迁移上下文", err)
 	}
 }
 

@@ -27,16 +27,22 @@ type cacheFlight[V any] struct {
 	cloneable bool
 }
 type readCache struct {
-	mu         sync.Mutex
-	entries    map[string]cacheEntry
-	epochs     map[string]uint64
-	group      singleflight.Group
-	disabled   bool
-	bytes      int64
-	limits     CacheConfig
-	types      map[reflect.Type]uint64
-	generation uint64 // ConfigureCache 后禁止旧在途查询重新填充缓存。
-	namespace  string // 未显式指定 Namespace 时使用不可复用的随机标识。
+	mu              sync.Mutex
+	entries         map[string]cacheEntry
+	epochs          map[string]uint64
+	group           singleflight.Group
+	disabled        bool
+	bytes           int64
+	limits          CacheConfig
+	types           map[reflect.Type]uint64
+	generation      uint64 // ConfigureCache 后禁止旧在途查询重新填充缓存。
+	namespace       string // 未显式指定 Namespace 时使用不可复用的随机标识。
+	pending         map[string]uint64
+	pendingSequence uint64
+	retrying        bool
+	retryStop       chan struct{}
+	retryDone       chan struct{}
+	closed          bool
 }
 
 // InvalidateCache 清除同 Client、同数据库的所有包装器中指定集合的读缓存。
@@ -92,6 +98,9 @@ func readCached[V any](ctx context.Context, db *Database, scope, method string, 
 	}
 	hash := sha256.Sum256(encoded)
 	if store := activeCacheStore(db); store != nil && o.cacheTTL > 0 {
+		if !db.sharedCacheReady(ctx, store, scope) {
+			return load()
+		}
 		return readSharedCache(ctx, c, store, db, scope, method, hex.EncodeToString(hash[:]), epoch, generation, o, load)
 	}
 	cacheKey := fmt.Sprintf("%s/%d/%d/%s/%d/%s", scope, generation, epoch, method, typeID, hex.EncodeToString(hash[:]))

@@ -13,6 +13,18 @@ type DataPermissionInjectFn = plugin.DataPermissionInjectFn
 // DataPermissionConfig 配置不参与数据权限的集合。
 type DataPermissionConfig = plugin.DataPermissionConfig
 
+// ErrDataPermissionRequired 可用 errors.Is 判断严格模式中缺失的权限上下文。
+var ErrDataPermissionRequired = plugin.ErrDataPermissionRequired
+
+// RequireDataPermission 供鉴权中间件在进入业务层前检查权限注入是否完整。
+// 返回 nil 仅表示存在注入函数；具体集合的权限条件仍在 Repository 执行时检查。
+func RequireDataPermission(ctx context.Context) error {
+	if ctx == nil || DataPermissionFromCtx(ctx) == nil {
+		return ErrDataPermissionRequired
+	}
+	return nil
+}
+
 // RegisterDataPermission 启用数据权限插件。查询、更新和删除都会读取上下文中的注入函数。
 func RegisterDataPermission(db *Database, cfg DataPermissionConfig) error {
 	if db == nil {

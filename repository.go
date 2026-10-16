@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kuangshp/mongo-plus/field"
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"github.com/kuangshp/mongo-plus/plugin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -31,7 +32,7 @@ func NewRepository[T any, K ID](db *Database, c CollectionConfig) (*Repository[T
 	if db == nil || db.native == nil {
 		return nil, fmt.Errorf("数据库不能为空")
 	}
-	if c.Name == "" || c.Name == "__mongo_plus_sequences" {
+	if c.Name == "" || settings.ReservedCollection(c.Name) {
 		return nil, fmt.Errorf("集合名称为空或使用保留名称")
 	}
 	id, err := c.ID.Normalize()

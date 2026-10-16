@@ -36,6 +36,13 @@ func NewCommandLogger(cfg LogConfig) (*event.CommandMonitor, error) {
 	if cfg.SlowThresholdMS < 0 || cfg.SlowThresholdMS > int64((1<<63-1)/time.Millisecond) {
 		return nil, fmt.Errorf("slowThresholdMs 必须为可表示的非负毫秒数")
 	}
+	if cfg.MaxLength < 0 || cfg.MaxLength > 1<<20 || cfg.MaxLength > 0 && cfg.MaxLength < 128 {
+		return nil, fmt.Errorf("日志 maxLength 必须为 0 或 128 到 1048576 字节")
+	}
+	if cfg.MaxLength == 0 {
+		cfg.MaxLength = 4096
+	}
+	cfg.SensitiveFields = append([]string(nil), cfg.SensitiveFields...)
 	if cfg.Level == "" || cfg.Level == LogSilent {
 		return nil, nil
 	}
@@ -66,7 +73,11 @@ func NewCommandLogger(cfg LogConfig) (*event.CommandMonitor, error) {
 			status, color = " [SLOW]", "\x1b[33m"
 		}
 		if err != nil {
-			status, color = " [ERROR] "+singleLine(err.Error()), "\x1b[31m"
+			detail := "command failed"
+			if cfg.IncludeErrorDetails {
+				detail = truncateCommand(singleLine(err.Error()), min(cfg.MaxLength, 1024))
+			}
+			status, color = " [ERROR] "+detail, "\x1b[31m"
 		}
 		metrics := fmt.Sprintf("[%.3fms] [rows:%s]%s", float64(e.Duration)/float64(time.Millisecond), commandRows(reply), status)
 		if cfg.Colorful {
@@ -85,7 +96,7 @@ func NewCommandLogger(cfg LogConfig) (*event.CommandMonitor, error) {
 				caller = commandCaller()
 			}
 			pending.Store(commandLogKey{e.ConnectionID, e.RequestID}, commandLogEntry{
-				caller: caller, database: e.DatabaseName, command: e.Command.String(),
+				caller: caller, database: singleLine(e.DatabaseName), command: safeCommand(e.Command, cfg),
 			})
 		},
 		Succeeded: func(_ context.Context, e *event.CommandSucceededEvent) {

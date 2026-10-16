@@ -3,6 +3,7 @@
 package sf
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -94,6 +95,29 @@ func (c *MemoryCache) Del(key string) {
 	c.mu.Unlock()
 }
 
+// GetWithError/SetWithError/DelWithError 与共享后端的错误反馈接口兼容。
+func (c *MemoryCache) GetWithError(ctx context.Context, key string) (any, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	value, found := c.Get(key)
+	return value, found, nil
+}
+func (c *MemoryCache) SetWithError(ctx context.Context, key string, value any, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.Set(key, value, ttl)
+	return nil
+}
+func (c *MemoryCache) DelWithError(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.Del(key)
+	return nil
+}
+
 // DelByPrefix 删除以 prefix 开头的全部键。
 func (c *MemoryCache) DelByPrefix(prefix string) {
 	c.DelByPrefixes([]string{prefix})
@@ -111,6 +135,14 @@ func (c *MemoryCache) DelByPrefixes(prefixes []string) {
 			}
 		}
 	}
+}
+
+func (c *MemoryCache) DelByPrefixesWithError(ctx context.Context, prefixes []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.DelByPrefixes(prefixes)
+	return nil
 }
 
 var (

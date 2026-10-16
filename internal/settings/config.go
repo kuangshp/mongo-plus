@@ -79,6 +79,15 @@ type CollectionConfig struct {
 	UpdatedByField string   // 可选更新人 BSON 字段，创建和更新时从 WithActor 读取。
 }
 
+// ReservedCollection 保护序列表和迁移控制集合，避免被普通业务仓储误修改。
+func ReservedCollection(name string) bool {
+	switch name {
+	case "__mongo_plus_sequences", "__mongo_plus_migrations", "__mongo_plus_migration_locks":
+		return true
+	}
+	return false
+}
+
 // Config 是连接配置；URI 可通过业务项目自己的配置系统注入。
 type Config struct {
 	URI         string        `json:"uri" yaml:"uri"`                 // 必填连接地址；认证、副本集等参数通过 URI 配置。
@@ -99,10 +108,14 @@ const (
 )
 
 // LogConfig 配置驱动命令日志。info 输出全部，warn 输出慢命令和错误，error 仅输出错误。
-// 日志含实际命令参数；Writer 仅通过 Go 设置，默认输出到 os.Stdout。
+// 命令参数按字段脱敏，可进一步隐藏全部值；Writer 仅通过 Go 设置，默认输出到 os.Stdout。
 type LogConfig struct {
-	Level           LogLevel  `json:"level,optional" yaml:"level"`                     // 空值或 silent 关闭；info 输出全部命令。
-	SlowThresholdMS int64     `json:"slowThresholdMs,optional" yaml:"slowThresholdMs"` // 0 使用 200ms。
-	Colorful        bool      `json:"colorful,optional" yaml:"colorful"`               // 是否输出 ANSI 颜色；日志文件通常保持 false。
-	Writer          io.Writer `json:"-" yaml:"-"`                                      // Go 中可指定输出流；nil 使用标准输出，无法通过 YAML 注入。
+	Level               LogLevel  `json:"level,optional" yaml:"level"`                             // 空值或 silent 关闭；info 输出全部命令。
+	SlowThresholdMS     int64     `json:"slowThresholdMs,optional" yaml:"slowThresholdMs"`         // 0 使用 200ms。
+	Colorful            bool      `json:"colorful,optional" yaml:"colorful"`                       // 是否输出 ANSI 颜色；日志文件通常保持 false。
+	Writer              io.Writer `json:"-" yaml:"-"`                                              // Go 中可指定输出流；nil 使用标准输出，无法通过 YAML 注入。
+	HideParameters      bool      `json:"hideParameters,optional" yaml:"hideParameters"`           // 隐藏全部参数值；保留命令名称、集合和字段结构。
+	SensitiveFields     []string  `json:"sensitiveFields,optional" yaml:"sensitiveFields"`         // 追加脱敏字段或点路径；默认敏感字段始终脱敏。
+	MaxLength           int       `json:"maxLength,optional" yaml:"maxLength"`                     // 命令内容字节上限，0 默认 4096，至少 128。
+	IncludeErrorDetails bool      `json:"includeErrorDetails,optional" yaml:"includeErrorDetails"` // 默认关闭，防止服务端错误回显敏感值；仅诊断时开启。
 }

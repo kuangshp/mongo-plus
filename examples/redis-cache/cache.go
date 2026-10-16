@@ -8,6 +8,7 @@ package redissfcache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/kuangshp/mongo-plus"
@@ -20,15 +21,30 @@ type RedisSFCache struct {
 	Prefix string
 }
 
+var _ mongoplus.SFCache = (*RedisSFCache)(nil)
+var _ mongoplus.SFCacheWithErrors = (*RedisSFCache)(nil)
+
 func (c *RedisSFCache) Get(key string) (any, bool) {
-	value, err := c.Client.Get(context.Background(), c.Prefix+key).Bytes()
-	if err != nil {
-		return nil, false
+	value, found, _ := c.GetWithError(context.Background(), key)
+	return value, found
+}
+
+func (c *RedisSFCache) GetWithError(ctx context.Context, key string) (any, bool, error) {
+	value, err := c.Client.Get(ctx, c.Prefix+key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, false, nil
 	}
-	return mongoplus.RawValue(value), true
+	if err != nil {
+		return nil, false, err
+	}
+	return mongoplus.RawValue(value), true, nil
 }
 
 func (c *RedisSFCache) Set(key string, val any, ttl time.Duration) {
+	_ = c.SetWithError(context.Background(), key, val, ttl)
+}
+
+func (c *RedisSFCache) SetWithError(ctx context.Context, key string, val any, ttl time.Duration) error {
 	var encoded []byte
 	switch typed := val.(type) {
 	case mongoplus.RawValue:
@@ -37,14 +53,18 @@ func (c *RedisSFCache) Set(key string, val any, ttl time.Duration) {
 		var err error
 		encoded, err = json.Marshal(val)
 		if err != nil {
-			return
+			return err
 		}
 	}
-	_ = c.Client.Set(context.Background(), c.Prefix+key, encoded, ttl).Err()
+	return c.Client.Set(ctx, c.Prefix+key, encoded, ttl).Err()
 }
 
 func (c *RedisSFCache) Del(key string) {
-	_ = c.Client.Del(context.Background(), c.Prefix+key).Err()
+	_ = c.DelWithError(context.Background(), key)
+}
+
+func (c *RedisSFCache) DelWithError(ctx context.Context, key string) error {
+	return c.Client.Del(ctx, c.Prefix+key).Err()
 }
 
 func (c *RedisSFCache) DelByPrefix(prefix string) {
@@ -52,16 +72,21 @@ func (c *RedisSFCache) DelByPrefix(prefix string) {
 }
 
 func (c *RedisSFCache) DelByPrefixes(prefixes []string) {
-	ctx := context.Background()
+	_ = c.DelByPrefixesWithError(context.Background(), prefixes)
+}
+
+func (c *RedisSFCache) DelByPrefixesWithError(ctx context.Context, prefixes []string) error {
 	for _, prefix := range prefixes {
 		var cursor uint64
 		for {
 			keys, next, err := c.Client.Scan(ctx, cursor, c.Prefix+prefix+"*", 500).Result()
 			if err != nil {
-				return
+				return err
 			}
 			if len(keys) > 0 {
-				_ = c.Client.Del(ctx, keys...).Err()
+				if err := c.Client.Del(ctx, keys...).Err(); err != nil {
+					return err
+				}
 			}
 			cursor = next
 			if cursor == 0 {
@@ -69,6 +94,7 @@ func (c *RedisSFCache) DelByPrefixes(prefixes []string) {
 			}
 		}
 	}
+	return nil
 }
 
 func (c *RedisSFCache) Close() error { return c.Client.Close() }

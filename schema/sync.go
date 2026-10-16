@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/kuangshp/mongo-plus/migration"
 	"reflect"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -95,6 +96,16 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 // Apply 同步创建集合、校验规则和缺失索引，不删除已有数据/索引。
 // 这些管理命令不是一个原子事务；失败后可修复原因并重新执行 Plan/Apply。
 func Apply(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change, error) {
+	var changes []Change
+	err := migration.WithLock(ctx, db, func(lockedCtx context.Context) error {
+		var applyErr error
+		changes, applyErr = apply(lockedCtx, db, entities)
+		return applyErr
+	})
+	return changes, err
+}
+
+func apply(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change, error) {
 	changes, err := Plan(ctx, db, entities)
 	if err != nil {
 		return nil, err

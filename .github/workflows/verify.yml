@@ -50,6 +50,8 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Race and full integration tests
         run: go test -race -count=1 -timeout=15m ./...
+      - name: Mixed read and write load-tool smoke test
+        run: go run ./cmd/mongoplus-loadtest -uri "$MONGOPLUS_TEST_URI" -seed 1000 -concurrency 4 -warmup 1s -duration 2s -output /tmp/mongo-plus-loadtest.json
       - name: Primary failover and transaction recovery
         run: MONGOPLUS_FAILOVER_URI="$MONGOPLUS_TEST_URI" go test -race -count=1 -run '^TestReplicaSetFailover$' -timeout=2m .
       - name: Stop test databases

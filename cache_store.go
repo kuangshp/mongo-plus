@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -110,27 +111,27 @@ func sharedCachePrefix(db *Database, collection string) string {
 	return "mprepo:v2:" + hex.EncodeToString(hash[:]) + ":"
 }
 
-func deleteSharedCache(peers []*Database, collection string) {
+func deleteSharedCache(ctx context.Context, peers []*Database, collection string) error {
+	var failures []error
 	for _, peer := range peers {
 		store := activeCacheStore(peer)
 		if store == nil {
 			continue
 		}
-		prefix := sharedCachePrefix(peer, collection)
 		// 先换版本。旧查询即使在删除后写回，也只会写入无人再读取的旧版本。
 		// 版本键不设置 TTL；若被后端逐出，读取方会生成新随机版本，不复用旧键。
-		store.Set(prefix+"version", sf.RawValue(rand.Text()), 0)
-		if batch, ok := store.(sf.SFCachePrefixBatchDeleter); ok {
-			batch.DelByPrefixes([]string{prefix + "data:"})
+		if err := publishCacheInvalidation(ctx, peer, store, collection); err != nil {
+			peer.queueCacheInvalidation(collection)
+			peer.cacheEvent(ctx, "invalidate", collection, err)
+			failures = append(failures, err)
 			continue
 		}
-		if deleter, ok := store.(sf.SFCachePrefixDeleter); ok {
-			deleter.DelByPrefix(prefix + "data:")
-		}
+		cleanupCachePrefix(ctx, peer, store, collection)
 	}
+	return errors.Join(failures...)
 }
 
-func sharedCacheVersion(store sf.SFCache, prefix string) string {
+func sharedCacheVersion(ctx context.Context, db *Database, store sf.SFCache, collection, prefix string) string {
 	decode := func(value any, ok bool) string {
 		if !ok {
 			return ""
@@ -141,17 +142,27 @@ func sharedCacheVersion(store sf.SFCache, prefix string) string {
 		return ""
 	}
 	key := prefix + "version"
-	if version := decode(store.Get(key)); version != "" {
+	value, found, err := cacheGet(ctx, db, store, collection, key)
+	if err != nil {
+		return ""
+	}
+	if version := decode(value, found); version != "" {
 		return version
 	}
-	store.Set(key, sf.RawValue(rand.Text()), 0)
+	if err := cacheSet(ctx, db, store, collection, key, sf.RawValue(rand.Text()), 0); err != nil {
+		return ""
+	}
 	// 后端不可用或未保存版本时直接回源，不能退回到可复用的空版本。
-	return decode(store.Get(key))
+	value, found, err = cacheGet(ctx, db, store, collection, key)
+	if err != nil {
+		return ""
+	}
+	return decode(value, found)
 }
 
 func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCache, db *Database, scope, method, hash string, epoch, generation uint64, o QueryOption, load func() (V, error)) (V, error) {
 	prefix := sharedCachePrefix(db, scope)
-	version := sharedCacheVersion(store, prefix)
+	version := sharedCacheVersion(ctx, db, store, scope, prefix)
 	if version == "" {
 		return load()
 	}
@@ -162,7 +173,11 @@ func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCa
 	}
 	typeHash := sha256.Sum256([]byte(base.PkgPath() + ":" + typ.String()))
 	key := prefix + "data:" + version + ":" + hex.EncodeToString(typeHash[:]) + ":" + method + ":" + hash
-	if value, ok := sharedValue[V](store.Get(key)); ok {
+	stored, found, cacheErr := cacheGet(ctx, db, store, scope, key)
+	if cacheErr != nil {
+		return load()
+	}
+	if value, ok := sharedValue[V](stored, found); ok {
 		if copied, _, copiedOK := copyCacheValue(value); copiedOK {
 			return copied, nil
 		}
@@ -181,10 +196,11 @@ func readSharedCache[V any](ctx context.Context, local *readCache, store sf.SFCa
 		if raw, err := bson.Marshal(bson.D{{Key: "v", Value: copied}}); err == nil {
 			local.mu.Lock()
 			limits := local.limits.defaults()
-			if !local.disabled && !limits.Disabled && local.generation == generation && local.epochs[scope] == epoch && bytes <= limits.MaxEntryBytes && bytes <= limits.MaxBytes {
-				store.Set(key, sf.RawValue(raw), o.cacheTTL)
-			}
+			eligible := !local.disabled && !limits.Disabled && local.generation == generation && local.epochs[scope] == epoch && bytes <= limits.MaxEntryBytes && bytes <= limits.MaxBytes
 			local.mu.Unlock()
+			if eligible {
+				_ = cacheSet(ctx, db, store, scope, key, sf.RawValue(raw), o.cacheTTL)
+			}
 		}
 		return sharedFlight[V]{value: copied, shared: true}, nil
 	})

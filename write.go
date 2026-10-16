@@ -63,6 +63,7 @@ func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops [
 			protected = append(protected, p)
 		}
 	}
+	protected = append(protected, r.tenantProtectedFields()...)
 	if r.db != nil && r.db.sensitive != nil {
 		ops, err = r.db.sensitive.rewrite(ops)
 		if err != nil {
@@ -106,6 +107,9 @@ func (r *Repository[T, K]) auditUpdate(ctx context.Context, update bson.D) (bson
 	filled := map[string]bool{}
 	if r.db != nil && r.db.autofill != nil {
 		for _, item := range r.db.autofill.OnUpdate(ctx) {
+			if err := r.checkTenantAssignment(item.Path); err != nil {
+				return nil, err
+			}
 			filled[item.Path] = true
 			update = appendUpdate(update, "$set", item.Path, item.Value)
 		}
@@ -118,6 +122,26 @@ func (r *Repository[T, K]) auditUpdate(ctx context.Context, update bson.D) (bson
 		update = appendUpdate(update, "$set", r.config.UpdatedByField, value)
 	}
 	return update, nil
+}
+
+func (r *Repository[T, K]) tenantProtectedFields() []string {
+	fields := []string{}
+	if r.config.TenantField != "" {
+		fields = append(fields, r.config.TenantField)
+	}
+	if r.db != nil && r.db.tenant != nil {
+		fields = append(fields, r.db.tenant.ProtectedFields(r.config.Name, r.config.TenantField)...)
+	}
+	return fields
+}
+
+func (r *Repository[T, K]) checkTenantAssignment(path string) error {
+	for _, protected := range r.tenantProtectedFields() {
+		if path == protected || stringsOverlap(path, protected) {
+			return fmt.Errorf("自动填充不能修改受保护的租户字段 %q", path)
+		}
+	}
+	return nil
 }
 
 // DeleteById 删除文档；启用逻辑删除时只设置 deleted_at。

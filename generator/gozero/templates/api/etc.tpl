@@ -13,7 +13,11 @@ MongoConfig:
   Log:
     level: info # info 全部命令，warn 慢命令和错误，error 仅错误，silent 关闭。
     slowThresholdMs: 200 # 慢命令阈值，0 使用 200ms。
-    colorful: true # 交互式控制台可开启颜色；日志含命令参数和业务 file:line。
+    colorful: true # 交互式控制台可开启颜色；业务 file:line 可由 IDE 识别跳转。
+    hideParameters: true # 默认隐藏参数值；本机排查可改为 false，常见敏感字段仍会脱敏。
+    sensitiveFields: [] # 追加敏感字段或点路径，例如 ["identity_number", "profile.address"]。
+    maxLength: 4096 # 命令内容字节上限，超出时截断；范围 128～1048576。
+    includeErrorDetails: false # 防止错误消息回显敏感值；仅受控诊断时开启。
 
 # 日志级别和格式；LogRotation.Enabled=true 时统一由下方文件日志管理器输出。
 Log:

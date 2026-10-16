@@ -304,6 +304,23 @@ func (p *TenantPlugin) Conditions(ctx context.Context, collection, fallback stri
 	return documents, false, nil
 }
 
+// ProtectedFields 返回当前集合实际生效的租户字段；更新时同时保护父子路径。
+// 即使本次 Context 使用 SkipTenant，也不能通过普通更新迁移记录的租户归属。
+func (p *TenantPlugin) ProtectedFields(collection, fallback string) []string {
+	if p == nil {
+		return nil
+	}
+	fields, skip := p.fieldsFor(collection, fallback)
+	if skip {
+		return nil
+	}
+	names := make([]string, 0, len(fields))
+	for _, item := range fields {
+		names = append(names, item.name)
+	}
+	return names
+}
+
 // CreateValues 返回创建文档时要写入的租户字段。
 func (p *TenantPlugin) CreateValues(ctx context.Context, collection, fallback string) (map[string]any, bool, error) {
 	documents, skip, err := p.Conditions(ctx, collection, fallback)
