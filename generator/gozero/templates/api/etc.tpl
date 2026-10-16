@@ -11,9 +11,9 @@ MongoConfig:
   MaxPoolSize: 100 # 所有 Repository 共用一个 Client 的连接池。
   TimeoutSeconds: 10 # 初始化连接及数据库操作超时，范围 1～3600 秒。
   Log:
-    level: silent # info 全部命令，warn 慢命令和错误，error 仅错误，silent 关闭。
+    level: info # info 全部命令，warn 慢命令和错误，error 仅错误，silent 关闭。
     slowThresholdMs: 200 # 慢命令阈值，0 使用 200ms。
-    colorful: false # 交互式控制台可开启颜色；日志含命令参数和业务 file:line。
+    colorful: true # 交互式控制台可开启颜色；日志含命令参数和业务 file:line。
 
 # 日志级别和格式；LogRotation.Enabled=true 时统一由下方文件日志管理器输出。
 Log:
