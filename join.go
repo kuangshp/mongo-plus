@@ -158,7 +158,11 @@ func (q *Aggregation) OnlyDeleted() *Aggregation { q.option.deleted = 2; return 
 
 // Build 返回带完整隔离条件的聚合管道，用于调试或显式原生执行。
 func (q *Aggregation) Build(ctx context.Context) (mongo.Pipeline, error) {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := q.operationContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 	base, _, err := q.buildBase(ctx, false)
 	if err != nil {
 		return nil, err
@@ -580,7 +584,11 @@ func (q *Aggregation) reveal(ctx context.Context, value any) error {
 }
 
 func (q *Aggregation) scan(ctx context.Context, dest any) (err error) {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := q.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	end := q.observe(ctx, "Scan")
 	defer func() { end(err) }()
 	value, err := scanDestination(dest)
@@ -611,7 +619,11 @@ type aggregatePageCount struct {
 }
 
 func (q *Aggregation) scanByPage(ctx context.Context, dest any, page, size int64) (total int64, err error) {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := q.operationContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
 	end := q.observe(ctx, "ScanByPage")
 	defer func() { end(err) }()
 	value, err := scanDestination(dest)

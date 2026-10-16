@@ -246,6 +246,9 @@ func dalCollection(ctx context.Context, dal *DAL, command dalCommand) (*mongo.Co
 	if err != nil {
 		return nil, err
 	}
+	if _, _, err := operationContext(ctx, db, nil); err != nil {
+		return nil, err
+	}
 	return db.native.Collection(command.collection), nil
 }
 

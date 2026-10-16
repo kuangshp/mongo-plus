@@ -40,7 +40,11 @@ func (r *Repository[T, K]) UpdateMapById(ctx context.Context, id K, values map[s
 }
 
 func (r *Repository[T, K]) update(ctx context.Context, opts []QueryOption, ops []UpdateOp, many bool) (result *mongo.UpdateResult, err error) {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := r.operationContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 	end := r.observe(ctx, "Update")
 	defer func() { end(err) }()
 	filter, err := r.filter(ctx, mergeOptions(opts), true)
@@ -181,7 +185,11 @@ func (r *Repository[T, K]) HardDeleteByWrapper(ctx context.Context, fn func(*Wra
 }
 
 func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many, hard bool) (count int64, err error) {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := r.operationContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
 	end := r.observe(ctx, "Delete")
 	defer func() { end(err) }()
 	filter, err := r.filter(ctx, mergeOptions(opts), true)
@@ -225,7 +233,11 @@ func (r *Repository[T, K]) delete(ctx context.Context, opts []QueryOption, many,
 
 // RestoreById 恢复逻辑删除记录，普通更新不能修改 deleted_at。
 func (r *Repository[T, K]) RestoreById(ctx context.Context, id K) (int64, error) {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := r.operationContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
 	if !r.config.SoftDelete {
 		return 0, fmt.Errorf("集合未启用逻辑删除")
 	}

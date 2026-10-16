@@ -15,6 +15,8 @@ type defaultUserRepository struct {
 }
 
 type iDefaultUserRepository interface {
+	// WithTx 绑定本库事务回调的 txCtx，返回保留业务扩展的副本；必须使用返回值。
+	WithTx(txCtx context.Context) UserRepository
 	// Create 创建记录，成功后回填主键和自动字段。
 	Create(ctx context.Context, m *model.UserEntity) error
 	// CreateBatch 有序批量创建；整批回滚请使用 Transaction 和 txCtx。
@@ -54,10 +56,19 @@ type iDefaultUserRepository interface {
 	Native() *mongo.Collection
 }
 
-var _ iDefaultUserRepository = (*defaultUserRepository)(nil)
+// WithTx 位于生成文件，升级后重新生成即可使用，不需要覆盖业务扩展文件。
+// 同时复制业务结构体、基础仓储和执行器，保留覆盖方法与依赖，原仓储不变。
+// 互斥锁等不可复制状态请通过指针持有，不要并发修改原仓储的字段。
+func (r *customerUserRepository) WithTx(txCtx context.Context) UserRepository {
+	copy := *r
+	base := *r.defaultUserRepository
+	base.Repository = r.Repository.WithTx(txCtx)
+	copy.defaultUserRepository = &base
+	return &copy
+}
 
 // 所有生成方法统一经过公共执行器，保留租户、逻辑删除、缓存失效及写入确认检查。
-// 事务中的读写传入 txCtx；MongoDB Session 随 Context 传递。
+// 事务读写使用 WithTx(txCtx) 返回的仓储，也可向原仓储方法直接传 txCtx。
 func (r *defaultUserRepository) Create(ctx context.Context, m *model.UserEntity) error {
 	return r.Repository.Create(ctx, m)
 }
@@ -171,20 +182,24 @@ func (r *defaultUserRepository) Native() *mongo.Collection {
 }
 
 // newDefaultUserRepository 使用默认连接或显式连接，以及生成时解析的集合配置。
+// 这里只创建仓储包装器，复用已有 Client，不新建连接，也不自动同步集合结构。
 func newDefaultUserRepository(db ...*mongoplus.Database) *defaultUserRepository {
+	// go-zero 启动模板已注册默认连接；显式传参时优先使用指定数据库。
 	database := mongoplus.DefaultDB()
 	if len(db) > 0 {
 		database = db[0]
 	}
-	return &defaultUserRepository{Repository: mongoplus.MustRepository[model.UserEntity, int64](database, mongoplus.CollectionConfig{
-		Name: "users",
-		ID: mongoplus.IDConfig{
-			Type:       mongoplus.IDTypeInt64,
-			Generation: mongoplus.IDGenerationIncrement,
-			BlockSize:  0,
-		},
-		SoftDelete:  true,
-		Timestamps:  true,
-		TenantField: "",
-	})}
+	return &defaultUserRepository{
+		Repository: mongoplus.MustRepository[model.UserEntity, int64](database, mongoplus.CollectionConfig{
+			Name: "users", // 实际集合名，与 schema 中的 collection 或命名规则一致。
+			ID: mongoplus.IDConfig{
+				Type:       mongoplus.IDTypeInt64,
+				Generation: mongoplus.IDGenerationIncrement,
+				BlockSize:  0, // int64 自增主键的预分配数量；0/1 表示按需申请。
+			},
+			SoftDelete:  true, // 启用时普通删除仅设置 deleted_at。
+			Timestamps:  true, // 启用时自动维护 created_at、updated_at。
+			TenantField: "",   // 租户 BSON 字段；空字符串表示未配置集合级租户字段。
+		}),
+	}
 }

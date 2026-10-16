@@ -23,6 +23,7 @@ type Repository[T any, K ID] struct {
 	db         *Database
 	collection *mongo.Collection
 	config     CollectionConfig
+	tx         *transactionBinding
 }
 
 // NewRepository 创建仓储；T 必须为具有 ID 字段的结构体。
@@ -91,6 +92,18 @@ func (r *Repository[T, K]) observe(ctx context.Context, operation string) func(e
 }
 
 func (r *Repository[T, K]) filter(ctx context.Context, o QueryOption, write bool) (bson.D, error) {
+	// 关联集合也必须核对绑定，不能把另一事务的仓储静默用于当前管道。
+	if r.tx != nil {
+		if r.tx.err != nil {
+			return nil, r.tx.err
+		}
+		if err := r.tx.scope.check(r.db); err != nil {
+			return nil, err
+		}
+		if mongo.SessionFromContext(ctx) != r.tx.scope.session || ctx.Value(transactionScopeKey{}) != r.tx.scope {
+			return nil, ErrTransactionMismatch
+		}
+	}
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
@@ -243,7 +256,11 @@ func (r *Repository[T, K]) findList(ctx context.Context, opts ...QueryOption) (e
 
 // Walk 按批次读取文档，避免将整个集合载入内存；回调错误会停止读取。
 func (r *Repository[T, K]) Walk(ctx context.Context, fn func(*T) error, opts ...QueryOption) error {
-	ctx = resolveContext(ctx)
+	ctx, cleanup, err := r.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	o := mergeOptions(opts)
 	filter, err := r.filter(ctx, o, false)
 	if err != nil {

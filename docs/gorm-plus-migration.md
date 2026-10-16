@@ -21,7 +21,8 @@ mongo-plus 以 gorm-plus 的业务使用习惯为参照：根目录 `generator.g
 | `Delete().WithPhysicalDelete().Build()` | 同名选项，支持按 ID、ID 列表和 Wrapper 删除 |
 | `RegisterCtxResolver` | 同名注册入口，不引入 Gin 依赖 |
 | `WithSingleFlight(0)` / `WithSingleFlight(ttl)` | 同样分别表示仅并发合并、并发合并加缓存；也支持无参写法 |
-| `TransactionAs` / `CreateTx` 等 | 使用事务回调提供的 `txCtx` 调用普通 Repository 方法 |
+| `TransactionCtx` / `TransactionAsCtx` | 同名入口；MongoDB 以 `ctx` 为首参，事务凭据为 Session Context |
+| `repository.WithTx(tx).Create(ctx, entity)` | `repository.WithTx(txCtx).Create(ctx, entity)`；查询和写入均调用普通方法 |
 
 `DbPage` 默认第一页、每页 10 条、最多 500 条，并对负页码和计算溢出作保护；返回的 offset/limit 为驱动所需的 `int64`。标准分页直接使用 Repository 的分页方法，不需要业务层重新计算。
 
@@ -122,20 +123,28 @@ mongoplus.RegisterCtxResolver(func(ctx context.Context) context.Context {
 
 ## 事务
 
-MongoDB 使用 Session Context 传递事务。迁移时将 `CreateTx(ctx, tx, entity)` 改成 `Create(txCtx, entity)`，同一回调内的查询和写入都传 `txCtx`：
+当前 gorm-plus 已统一使用 `WithTx(tx).普通方法(...)`，mongo-plus 同样提供仓储副本绑定。区别是 MongoDB 使用 Session Context 作为事务凭据，回调中的 `txCtx` 对应 gorm-plus 的事务 DAO：
 
 ```go
-err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
-    if err := orderRepository.Create(txCtx, order); err != nil {
+err := mongoplus.TransactionCtx(ctx, db, func(txCtx context.Context) error {
+    orders := orderRepository.WithTx(txCtx)
+    details := orderDetailRepository.WithTx(txCtx)
+    if err := orders.Create(ctx, order); err != nil {
         return err
     }
-    return orderDetailRepository.CreateBatch(txCtx, details)
+    return details.CreateBatch(ctx, detailEntities)
 })
 ```
 
-`TransactionAs` 的形状为 `TransactionAs(ctx, db, use, fn)`，其中 `use` 接收事务 Context，可以将它与已注入的 Repository 一起包装为项目自己的工作单元。通常直接使用 `Transaction` 更少改动，不需要为每个 Repository 重新创建连接或增加重复的 `*Tx` 方法。
+`WithTx` 不修改原仓储，返回完整业务接口并保留覆盖方法和注入依赖；必须接收返回值或链式调用。绑定仓储后仍传请求 `ctx`，查询、分页、聚合和全部写入自动使用事务 Session。原有向普通方法直接传 `txCtx` 的写法继续兼容。较旧 gorm-plus 项目中的 `CreateTx(ctx, tx, entity)` 应改成 `WithTx(txCtx).Create(ctx, entity)`。
 
-事务要求副本集或分片集群，所有 Repository 必须共用同一 Client。驱动可能重试回调；事务内不要并行使用 Session，也不要执行不可重复的外部副作用。事务中的读取跳过本机缓存，事务结束后失效涉及的集合缓存。
+`Transaction` 与 `TransactionCtx` 的参数、行为相同，均为 `(ctx, db, fn, opts...)`。`TransactionAs` 与 `TransactionAsCtx` 均为 `(ctx, db, use, fn, opts...)`，`use` 接收事务 Context 并返回业务类型，可以绑定已有 Repository 组成工作单元；例如 `TransactionAsCtx(ctx, db, userRepository.WithTx, func(users repository.UserRepository) error { return users.Create(ctx, user) })`。MongoDB 不使用 gorm-gen 的 `dao.Use`。
+
+升级库后重新运行 `go run generator.go`，`WithTx` 会写入 `_gen.go`，无需覆盖业务扩展；手写 mock/接口实现需补充方法。自定义方法优先组合普通仓储方法，`Native()` 操作仍需显式使用 `txCtx` 并维护缓存。
+
+无效/未跟踪绑定返回 `ErrUnmanagedTransaction`，不同 Client、Session 或轮次混用返回 `ErrTransactionMismatch`；回调退出后绑定仓储及该轮 `txCtx` 返回 `ErrTxDone`。每轮驱动重试必须重新 `WithTx`，不要保存绑定仓储供下一轮或回调外使用。
+
+事务要求副本集或分片集群，所有 Repository 必须共用同一 Client。驱动可能重试回调；不要并行使用 Session、手动 Commit/Rollback 或执行不可重复的外部副作用。事务读取跳过缓存及 SingleFlight；提交后统一失效涉及的集合缓存，回滚不发布失效；提交结果不确定时保守失效。MongoDB 不支持 GORM 的嵌套保存点，嵌套事务明确报错。
 
 ## 缓存、数据权限与数据库特有功能
 

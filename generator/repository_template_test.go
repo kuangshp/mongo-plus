@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,18 +16,36 @@ func TestRepositoryExplicitMethodsAndBusinessOverrides(t *testing.T) {
 	if _, err := Generate(c); err != nil {
 		t.Fatal(err)
 	}
+	// 模拟旧项目已有业务扩展和注入依赖；升级只重写 _gen.go。
+	extensionPath := filepath.Join(c.RepoPath, "user.go")
+	extension, err := os.ReadFile(extensionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := strings.Replace(string(extension), "*defaultUserRepository", "*defaultUserRepository\n\tdependency *string", 1)
+	if err := os.WriteFile(extensionPath, []byte(custom), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(c); err != nil {
+		t.Fatal(err)
+	}
 	usage := fmt.Sprintf(`package repository
 
 import (
     "context"
+    "errors"
+    "fmt"
     "go/ast"
     "go/parser"
     "go/token"
     "reflect"
+    "os"
     "testing"
+    "time"
     mongoplus "github.com/kuangshp/mongo-plus"
     model %q
     "go.mongodb.org/mongo-driver/v2/mongo"
+    "go.mongodb.org/mongo-driver/v2/bson"
     "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
@@ -67,6 +86,7 @@ func TestExplicitPublicContract(t *testing.T) {
 
 // 与 gorm-plus 一样，在业务结构体上声明相同签名即可覆盖基础方法。
 func (r *customerUserRepository) FindOne(ctx context.Context, query ...mongoplus.QueryOption) (*model.UserEntity,error) {
+    if r.dependency != nil { return &model.UserEntity{Username:*r.dependency},nil }
     return &model.UserEntity{Username:"overridden"},nil
 }
 
@@ -83,6 +103,43 @@ func TestDefaultConnectionAndOverride(t *testing.T) {
     if users.Native().Database().Name()!="default" { t.Fatal("无参构造没有使用默认连接") }
     explicit:=NewUserRepository(mongoplus.NewDatabase(client.Database("explicit")))
     if explicit.Native().Database().Name()!="explicit" { t.Fatal("显式连接没有优先于默认连接") }
+    name:="injected"
+    custom:=users.(*customerUserRepository)
+    custom.dependency=&name
+    bound:=users.WithTx(nil)
+    got,err=bound.FindOne(context.Background())
+    if err!=nil || got.Username!=name { t.Fatalf("绑定丢失业务覆盖或依赖: %%+v %%v",got,err) }
+    if bound==users || custom.Repository==bound.(*customerUserRepository).Repository { t.Fatal("绑定未复制仓储") }
+    if _,err:=bound.Count(context.Background()); !errors.Is(err,mongoplus.ErrUnmanagedTransaction) { t.Fatalf("无效绑定静默回退: %%v",err) }
+}
+
+func TestGeneratedTransactionBinding(t *testing.T) {
+    uri:=os.Getenv("MONGOPLUS_TEST_URI")
+    if uri=="" { t.Skip("需要临时 MongoDB 副本集") }
+    ctx,cancel:=context.WithTimeout(context.Background(),20*time.Second)
+    defer cancel()
+    db,err:=mongoplus.Connect(ctx,mongoplus.Config{URI:uri,Database:"mongo_plus_generated_"+bson.NewObjectID().Hex()})
+    if err!=nil { t.Fatal(err) }
+    defer db.Close(context.Background())
+    defer db.Native().Drop(context.Background())
+    users:=NewUserRepository(db)
+    if err:=users.Create(ctx,&model.UserEntity{Username:"seed"});err!=nil { t.Fatal(err) }
+    name:="injected"
+    users.(*customerUserRepository).dependency=&name
+    rollback:=errors.New("rollback")
+    var escaped UserRepository
+    err=mongoplus.TransactionCtx(ctx,db,func(tx context.Context)error{
+        escaped=users.WithTx(tx)
+        row:=&model.UserEntity{Username:"pending"}
+        if err:=escaped.Create(ctx,row);err!=nil{return err}
+        if got,err:=escaped.FindById(ctx,row.ID);err!=nil||got.Username!="pending" { return fmt.Errorf("事务读取失败: %%+v %%v",got,err) }
+        if n,err:=users.Count(ctx);err!=nil||n!=1{return fmt.Errorf("原仓储受影响: %%d %%v",n,err)}
+        if got,err:=escaped.FindOne(ctx);err!=nil||got.Username!=name{return fmt.Errorf("业务扩展丢失: %%+v %%v",got,err)}
+        return rollback
+    })
+    if !errors.Is(err,rollback){t.Fatal(err)}
+    if n,err:=users.Count(ctx);err!=nil||n!=1{t.Fatalf("未回滚: %%d %%v",n,err)}
+    if _,err:=escaped.Count(ctx);!errors.Is(err,mongoplus.ErrTxDone){t.Fatalf("生命周期检查失败: %%v",err)}
 }
 `, c.ImportPath("model"))
 	if err := os.WriteFile(filepath.Join(c.RepoPath, "repository_contract_test.go"), []byte(usage), 0600); err != nil {

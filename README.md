@@ -781,16 +781,46 @@ ctx = mongoplus.SkipDataPermission(ctx) // 受控的全量查询。
 
 ### 事务
 
+事务内统一使用 `WithTx(txCtx).普通方法(...)`，与 gorm-plus 的仓储绑定习惯一致。MongoDB 的事务凭据是携带 Session 的 `context.Context`，因此这里的 `txCtx` 对应 gorm-plus 的事务 DAO。
+
 ```go
-err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
-    if err := userRepository.Create(txCtx, user); err != nil {
+err := mongoplus.TransactionCtx(ctx, db, func(txCtx context.Context) error {
+    users := userRepository.WithTx(txCtx)
+    profiles := profileRepository.WithTx(txCtx)
+
+    if err := users.Create(ctx, user); err != nil {
         return err
     }
-    return profileRepository.Create(txCtx, profile)
+    return profiles.Create(ctx, profile)
 })
 ```
 
-所有操作必须传 txCtx 并使用同一 Client。事务需要副本集或分片集群，不支持 standalone。驱动可能重试回调，回调中不要发送短信、调用支付等不可重复外部操作；不要并行执行同一 Session 中的操作。支持 TransactionAs 构建项目自己的仓储集合。事务的读关注和写关注使用官方 `options.Transaction()`。没有 SQL savepoint，也没有跨 MongoDB 与 MySQL 的原子事务。
+`WithTx` 只绑定已有事务，返回完整业务 Repository 接口，必须使用返回值；原仓储保持不变。绑定后，新增、批量新增、更新、删除、恢复、查询、分页、Count、Exists、Walk 和关联聚合都使用同一 Session。普通方法仍传请求 `ctx`，保留取消信号和请求值，并从事务入口补齐租户、操作人等上下文。原有 `userRepository.Create(txCtx, user)` 用法仍然支持。
+
+| 事务入口 | 回调参数 | 用途 |
+| --- | --- | --- |
+| `Transaction(ctx, db, fn, opts...)` | `context.Context` | 执行 Session 事务，可绑定多个 Repository，也可执行原生操作 |
+| `TransactionCtx(ctx, db, fn, opts...)` | `context.Context` | 与 `Transaction` 等价，便于沿用 gorm-plus 的命名 |
+| `TransactionAs(ctx, db, use, fn, opts...)` | 业务类型 `Q` | 每轮回调先调用 `use(txCtx)` 构造事务仓储集合 |
+| `TransactionAsCtx(ctx, db, use, fn, opts...)` | 业务类型 `Q` | 与 `TransactionAs` 等价，保留请求上下文 |
+
+MongoDB 操作始终显式传 Context，因此四个入口均以 `ctx` 为首参；`use` 的签名为 `func(context.Context) Q`，无需生成或导入业务 `dao.Use`。例如将单个仓储作为回调参数：
+
+```go
+err := mongoplus.TransactionAsCtx(ctx, db, userRepository.WithTx,
+    func(users repository.UserRepository) error {
+        return users.Create(ctx, user)
+    },
+)
+```
+
+关联查询也可以从绑定仓储开始，例如 `users.WithContext(ctx).LeftJoin(profiles, ...).Scan(&rows)`。公共执行器的 `Aggregate(ctx, boundRepository, pipeline)` 同样沿用绑定。事务读取自动跳过缓存和 SingleFlight；事务写入按集合登记，提交后统一失效，回滚不发布失效；提交结果不确定时保守失效。驱动重试时，每轮重新构造绑定仓储，前一轮的仓储不可复用。
+
+`WithTx(nil)`、普通 Context 或未由本库事务入口跟踪的原生 Session，在执行时返回 `ErrUnmanagedTransaction`；不同 Client、Session 或事务轮次混用返回 `ErrTransactionMismatch`。回调退出后，绑定仓储及该轮 `txCtx` 不可继续操作，返回 `ErrTxDone`。生成器会复制业务结构体、基础仓储和执行器，保留业务覆盖及注入依赖；锁等不可复制状态请通过指针持有，不要并发修改原仓储字段。自定义方法优先组合普通仓储方法；`Native()` 返回原生 Collection，原生调用仍需显式传入 `txCtx`，并自行处理租户、权限与缓存。
+
+升级工具库后，重新运行 `go run generator.go` 更新 `_gen.go` 即可获得 `WithTx`，业务扩展文件不会覆盖；手写 mock/接口实现需补充该方法。无需新增重复的 `CreateTx`、`UpdateByIdTx` 等方法。
+
+事务要求副本集或分片集群，所有参与仓储必须共用同一 Client。[MongoDB 官方事务说明](https://www.mongodb.com/docs/drivers/go/current/crud/transactions/)规定同一事务不可并行操作，回调也可能重试；不要在回调中发送短信、调用支付或手动 Commit/Rollback。嵌套 Session 事务会明确报错，没有 SQL savepoint 或跨 MongoDB/MySQL 原子事务。读关注和写关注使用官方 `options.Transaction()` 传入。
 
 ## 9. 可选本机缓存、SingleFlight 与监控
 

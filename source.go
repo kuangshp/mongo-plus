@@ -21,6 +21,7 @@ type collectionSource struct {
 	collection *mongo.Collection
 	model      reflect.Type
 	config     CollectionConfig
+	tx         *transactionBinding
 	filter     func(context.Context, QueryOption, bool) (bson.D, error)
 	err        error
 }
@@ -29,7 +30,7 @@ func (r *Repository[T, K]) collectionSource() collectionSource {
 	if r == nil || r.db == nil || r.collection == nil {
 		return collectionSource{err: fmt.Errorf("关联查询的 Repository 不能为空")}
 	}
-	return collectionSource{db: r.db, collection: r.collection, model: reflect.TypeOf((*T)(nil)).Elem(), config: r.config, filter: r.filter}
+	return collectionSource{db: r.db, collection: r.collection, model: reflect.TypeOf((*T)(nil)).Elem(), config: r.config, tx: r.tx, filter: r.filter}
 }
 
 func getSource(source Source) collectionSource {

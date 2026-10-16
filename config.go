@@ -170,39 +170,6 @@ func WithActor(ctx context.Context, id any) context.Context {
 	return plugin.WithOperator(ctx, id)
 }
 
-// Transaction 执行官方 Session 事务；回调必须使用 txCtx，且可能被驱动重试。
-func Transaction(ctx context.Context, db *Database, fn func(txCtx context.Context) error, opts ...options.Lister[options.TransactionOptions]) error {
-	ctx = resolveContext(ctx)
-	if db == nil || db.native == nil || fn == nil {
-		return fmt.Errorf("事务数据库和回调不能为空")
-	}
-	if mongo.SessionFromContext(ctx) != nil {
-		return fmt.Errorf("不支持嵌套 Session 事务")
-	}
-	session, err := db.native.Client().StartSession()
-	if err != nil {
-		return err
-	}
-	defer session.EndSession(ctx)
-	state := txCaches{}
-	ctx = context.WithValue(ctx, txCacheKey{}, state)
-	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) { return nil, fn(txCtx) }, opts...)
-	for database, collections := range state {
-		for collection := range collections {
-			database.InvalidateCache(collection)
-		}
-	}
-	return err
-}
-
-// TransactionAs 在事务中构建业务项目自己的仓储集合，保持与 gorm-plus 类似的用法。
-func TransactionAs[Q any](ctx context.Context, db *Database, use func(context.Context) Q, fn func(Q) error, opts ...options.Lister[options.TransactionOptions]) error {
-	if use == nil || fn == nil {
-		return fmt.Errorf("事务仓储构造函数和回调不能为空")
-	}
-	return Transaction(ctx, db, func(txCtx context.Context) error { return fn(use(txCtx)) }, opts...)
-}
-
 // DbPage 计算分页范围，与 gorm-plus 一样默认每页 10 条、最多 500 条。
 func DbPage(page, size int64) (offset, limit int64) {
 	if page < 1 {

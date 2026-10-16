@@ -1,5 +1,8 @@
 // customer{{.Name}}Repository 是业务自定义仓储；此文件首次创建后不再覆盖。
 // 自定义方法写在此结构体上；覆盖基础方法时保持相同的方法签名。
+// WithTx 由 _gen.go 提供，返回副本并保留业务依赖；锁等不可复制状态请通过指针持有。
+// 自定义方法优先组合已有仓储方法，自动沿用事务绑定、生命周期与提交后缓存失效。
+// Native 返回原生 Collection，原生调用仍需显式传入事务 txCtx 并自行维护缓存。
 type customer{{.Name}}Repository struct {
 	*default{{.Name}}Repository
 }
