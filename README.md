@@ -1,6 +1,6 @@
 # mongo-plus
 
-基于 `go.mongodb.org/mongo-driver/v2` 的 Go 数据访问库。沿用 gorm-plus 的类型安全字段、Repository、可选条件和分页使用习惯，支持 JSON 定义生成、手写 Entity、全局主键配置、逻辑删除、关联查询与链式聚合统计。
+基于 `go.mongodb.org/mongo-driver/v2` 的 Go 数据访问库。沿用 gorm-plus 的类型安全字段、Repository、可选条件和分页使用习惯，支持 JSON 定义生成、手写 Entity、全局主键配置、逻辑删除、关联查询与链式聚合统计。多租户、操作人自动填充和数据权限以插件注册；另外提供可替换缓存、主从数据源、JSON 查询文件、敏感字段和慢操作记录。
 
 从 gorm-plus 切换时，先看[迁移指南](docs/gorm-plus-migration.md)：保留根目录 `generator.go`、生成 Repository 注入、`FindPageByWrapper` 和 `QueryOpt` 的调用习惯，并列出更新返回值、BSON 条件与事务上下文的调整方式。
 
@@ -640,9 +640,9 @@ user, err := userRepository.FindById(ctx, id,
 
 复合索引的 fields 是有序数组，顺序会影响查询能力。还支持 sparse 和单个 datetime 字段的 expireAfterSeconds。TTL 是物理清理机制，与逻辑删除不同。
 
-## 7. 租户与事务
+## 7. 租户、操作人、数据权限与事务
 
-全局配置可选租户字段：
+集合只需要一个租户字段时，写在生成配置里即可，不必再注册插件：
 
 ```yaml
 tenant:
@@ -656,7 +656,72 @@ ctx := mongoplus.WithTenant(request.Context(), companyID)
 
 生成器补充 CompanyID，Create 从上下文填充。查询与写入使用“租户 AND 软删除 AND 业务条件”，OR 条件不能覆盖租户约束；缺少租户返回 ErrTenantRequired。WithDeleted/AllowAll 不绕过租户。
 
+需要同一集合多个租户字段、按集合换字段名、排除集合或超管切换租户时，启动时注册一次插件。字段优先级是 CollectionFields、TenantFields、TenantField。CollectionFields 里的空切片表示该集合不注入。
+
+```go
+err := mongoplus.RegisterTenant(db, mongoplus.TenantConfig[int64]{
+    TenantField: "tenant_id",
+    ExcludeCollections: []string{"sys_config"},
+    AllowOverrideTenantID: true,
+    CollectionFields: map[string][]mongoplus.TenantFieldConfig[int64]{
+        "order": {
+            {Field: "company_id"},
+            {Field: "org_id", GetTenantID: func(ctx context.Context) (int64, bool) {
+                id, ok := ctx.Value("orgID").(int64)
+                return id, ok && id != 0
+            }},
+        },
+        "secret": {},
+    },
+})
+ctx = mongoplus.WithTenantID(ctx, int64(1001))
+ctx = mongoplus.WithOverrideTenantID(ctx, int64(2002)) // 仅 AllowOverrideTenantID 开启后生效。
+ctx = mongoplus.SkipTenant(ctx)                        // 受控的跨租户查询，不再追加租户条件。
+ctx = mongoplus.AllowGlobalOperation(ctx)              // 允许只有租户条件的批量更新或删除。
+```
+
+`AddTenantExcludeCollection` 和 `RemoveTenantExcludeCollection` 可以在运行时调整排除集合。插件和集合配置里的 `TenantField` 可以同时存在，同名字段只注入一次。`Native()` 和后面的查询文件不自动套用这层条件。
+
 需要租户内唯一时，显式建立 company_id 与业务字段的复合唯一索引；字段的 unique 简写仍是整个集合唯一。
+
+### 操作人自动填充
+
+集合配置里的 `CreatedByField`、`UpdatedByField` 配合 `WithActor`，适合创建人和更新人是同一个值的情况。创建时两个字段都写入，更新时只改更新人；缺少操作人会返回错误。生成器目前不会自动写出这两个字段，需要在仓储配置中指定 BSON 路径。
+
+多个操作人字段、姓名或只在创建时填充，使用自动填充插件。`Name` 写成 `CreatedBy` 时会落到 `created_by`；已经是 `created_name` 这种路径则保持不变。
+
+```go
+err := mongoplus.RegisterAutoFill(db, mongoplus.AutoFillConfig{Fields: []mongoplus.FieldConfig{
+    {Name: "CreatedBy", Getter: mongoplus.OperatorGetter[int64](), OnCreate: true},
+    {Name: "UpdatedBy", Getter: mongoplus.OperatorGetter[int64](), OnCreate: true, OnUpdate: true},
+    {Name: "created_name", Getter: mongoplus.CtxGetter[string](mongoplus.CtxOperatorKey2), OnCreate: true},
+}})
+ctx = mongoplus.WithActor(ctx, userID)
+ctx = context.WithValue(ctx, mongoplus.CtxOperatorKey2, "ann")
+```
+
+`WithActor` 会同时写入 `OperatorGetter` 读取的位置。取值为空时跳过该字段。
+
+### 数据权限
+
+数据权限不内置“本部门 / 仅本人”规则。中间件按集合返回 BSON 条件，查询、更新、删除以及走仓储过滤的关联都会带上。上下文里没有注入函数时不加条件。
+
+```go
+err := mongoplus.RegisterDataPermission(db, mongoplus.DataPermissionConfig{
+    ExcludeCollections: []string{"sys_config"},
+})
+ctx = mongoplus.WithDataPermission(ctx, func(collection string) (bson.D, error) {
+    if collection == "order" {
+        return bson.D{{Key: "created_by", Value: userID}}, nil
+    }
+    return nil, nil
+})
+ctx = mongoplus.SkipDataPermission(ctx) // 受控的全量查询。
+```
+
+`AddDataPermissionExcludeCollection` 和 `RemoveDataPermissionExcludeCollection` 用于运行时调整排除集合。
+
+### 事务
 
 ```go
 err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
@@ -667,7 +732,7 @@ err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
 })
 ```
 
-所有操作必须传 txCtx 并使用同一 Client。事务需要副本集或分片集群，不支持 standalone。驱动可能重试回调，回调中不要发送短信、调用支付等不可重复外部操作；不要并行执行同一 Session 中的操作。支持 TransactionAs 构建项目自己的仓储集合，不提供 SQL savepoint 或跨 MongoDB/MySQL 的原子事务。
+所有操作必须传 txCtx 并使用同一 Client。事务需要副本集或分片集群，不支持 standalone。驱动可能重试回调，回调中不要发送短信、调用支付等不可重复外部操作；不要并行执行同一 Session 中的操作。支持 TransactionAs 构建项目自己的仓储集合。事务的读关注和写关注使用官方 `options.Transaction()`。没有 SQL savepoint，也没有跨 MongoDB 与 MySQL 的原子事务。
 
 ## 8. 可选本机缓存、SingleFlight 与监控
 
@@ -768,7 +833,16 @@ db.Observer = func(ctx context.Context, event mongoplus.Observation) {
 }
 ```
 
-在启动时设置 Observer，不在并发请求中更换。Create、CreateBatch、FindOne、FindList、Update、Delete 会报告耗时与错误，不默认记录请求文档或连接密钥。
+在启动时设置 Observer，不在并发请求中更换。Create、CreateBatch、FindOne、FindList、Update、Delete 会报告耗时与错误，不默认记录请求文档或连接密钥。`RegisterSlowQuery` 在现有 Observer 之外记录超过阈值的集合和操作，应在设置 Observer 之后调用。Threshold 为 0 时使用 200ms。这里没有可复制执行的 SQL 文本。
+
+```go
+err := mongoplus.RegisterSlowQuery(db, mongoplus.SlowQueryConfig{
+    Threshold: 200 * time.Millisecond,
+    Logger: func(ctx context.Context, info mongoplus.SlowQueryInfo) {
+        log.Printf("%s.%s cost=%s err=%v", info.Collection, info.Operation, info.Duration, info.Error)
+    },
+})
+```
 
 ## 9. 手写 Entity 路线
 
@@ -1168,6 +1242,66 @@ build: swagger
 - [独立的 go-zero 示例模块](examples/gozero/README.md)
 
 已有服务重新生成时不会自动覆盖所有旧入口和 Handler，应先对照新版模板合并所需功能，保留业务代码。
+
+## 13. 敏感字段、主从数据源与查询文件
+
+### 敏感字段
+
+明文建议标记 `bson:"-"`，密文和盲索引写入文档。等值查询使用索引字段，不要直接比较明文。读出默认脱敏；`WithSensitivePlaintext` 返回解密结果，`WithSensitiveCiphertext` 返回库存值。
+
+```go
+phone := mongoplus.PhoneField("Phone")
+phone.EncryptAtRest = true
+sensitive, err := mongoplus.RegisterSensitive(db, mongoplus.SensitiveConfig{
+    Key:    []byte("0123456789abcdef"), // 至少 16 字节，会派生加密密钥和索引密钥。
+    Fields: []mongoplus.SensitiveFieldConfig{phone},
+})
+condition := sensitive.PhoneEq("13800008000") // 条件落在 phone_index。
+```
+
+`Phone`、`PhoneCipher`、`PhoneIndex` 分别对应业务字段、密文字段和索引字段。未开启 `EncryptAtRest` 时，密文字段保存规范化后的值，索引仍然是 HMAC。更新 `phone` 路径时会改写到密文和索引，不把明文留在业务字段上。
+
+### 主从数据源
+
+连接由调用方先建好。从库 URI 带上 secondary 读偏好。没有从库时读操作使用主库。第一个注册的名称是 `Auto` 的默认数据源。
+
+```go
+err := mongoplus.DS.Register("default", mongoplus.DataSourceGroupConfig{
+    Master: primary,
+    Slaves: []*mongoplus.Database{secondaryA, secondaryB},
+})
+db, err := mongoplus.DS.Auto(ctx)                         // 未标记时走主库。
+db, err = mongoplus.DS.Auto(mongoplus.DSWithRead(ctx))    // 从库轮询。
+db, err = mongoplus.DS.Auto(mongoplus.DSWithWrite(ctx))   // 写标记优先，走主库。
+db, err = mongoplus.DS.Auto(mongoplus.DSWithName(ctx, "analytics"))
+```
+
+`DS.Read`、`DS.Write`、`DS.Ping` 和 `DS.Close` 用于显式选择、健康检查和关闭。同一个 Client 只会关闭一次。
+
+### JSON 查询文件
+
+复杂查询可以放在 JSON 文件里，调用名与 gorm-plus 的 DAL 对应。文件内容是集合、操作和 BSON，占位符用 `?` 或 `@name`，不解析 SQL。文件中的条件不会自动追加租户、数据权限和逻辑删除，需要写在文件里。更新和删除必须带 filter，整集操作要在文件中写 `"allowAll": true`。
+
+```json
+{"collection":"users","op":"find","filter":{"status":"?"},"limit":"?","skip":"?"}
+```
+
+```go
+//go:embed rawquery
+var queryFS embed.FS
+
+sub, err := fs.Sub(queryFS, "rawquery")
+dal, err := mongoplus.NewDal(db, mongoplus.NewEmbedLoader(sub))
+defer dal.Close()
+
+rows, err := mongoplus.DALQuery[UserVO](ctx, "user/page.json", int32(1), int64(10), int64(0))
+page, err := mongoplus.DALQueryPage[UserVO](ctx, "user/page.json", []any{int32(1)}, []any{int64(10), int64(0)})
+err = mongoplus.DALWithTx(ctx, func(txCtx context.Context) error {
+    return mongoplus.DALExec(txCtx, "user/disable.json", userID)
+})
+```
+
+分页计数文件是数据文件名前加 `count_`，例如 `user/page.json` 对应 `user/count_page.json`。`DALQueryOne` 找不到记录时返回 `(nil, nil)`。`WithDALDebug`、`WithDALHook` 和 `DALPreload` 用于开发日志、耗时回调和启动预热。
 
 ## 性能与生产使用
 

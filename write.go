@@ -99,7 +99,14 @@ func (r *Repository[T, K]) auditUpdate(ctx context.Context, update bson.D) (bson
 	if r.config.Timestamps {
 		update = appendUpdate(update, "$set", "updated_at", time.Now().UTC())
 	}
-	if r.config.UpdatedByField != "" {
+	filled := map[string]bool{}
+	if r.db != nil && r.db.autofill != nil {
+		for _, item := range r.db.autofill.OnUpdate(ctx) {
+			filled[item.Path] = true
+			update = appendUpdate(update, "$set", item.Path, item.Value)
+		}
+	}
+	if r.config.UpdatedByField != "" && !filled[r.config.UpdatedByField] {
 		value := ctx.Value(actorKey{})
 		if value == nil {
 			return nil, fmt.Errorf("缺少操作人信息")

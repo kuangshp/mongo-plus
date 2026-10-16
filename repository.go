@@ -2,12 +2,14 @@ package mongoplus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/kuangshp/mongo-plus/field"
+	"github.com/kuangshp/mongo-plus/plugin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -93,7 +95,7 @@ func (r *Repository[T, K]) filter(ctx context.Context, o QueryOption, write bool
 		return nil, err
 	}
 	conditions := append([]Condition(nil), o.conditions...)
-	if write && !o.allowAll {
+	if write && !o.allowAll && !plugin.GlobalAllowed(ctx) {
 		has := false
 		for _, c := range conditions {
 			if len(c.Document) > 0 {
@@ -104,13 +106,11 @@ func (r *Repository[T, K]) filter(ctx context.Context, o QueryOption, write bool
 			return nil, ErrUnsafeWrite
 		}
 	}
-	if r.config.TenantField != "" {
-		value := ctx.Value(tenantKey{})
-		if value == nil || reflect.ValueOf(value).IsZero() {
-			return nil, ErrTenantRequired
-		}
-		conditions = append(conditions, field.New[any](r.config.TenantField).Eq(value))
+	tenantConditions, err := r.tenantFilters(ctx)
+	if err != nil {
+		return nil, err
 	}
+	conditions = append(conditions, tenantConditions...)
 	if r.config.SoftDelete {
 		switch o.deleted {
 		case 0:
@@ -120,7 +120,7 @@ func (r *Repository[T, K]) filter(ctx context.Context, o QueryOption, write bool
 		}
 	}
 	if r.db != nil && r.db.permission != nil {
-		extra, err := r.db.permission.apply(ctx, r.config.Name)
+		extra, err := r.db.permission.Apply(ctx, r.config.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -133,6 +133,34 @@ func (r *Repository[T, K]) filter(ctx context.Context, o QueryOption, write bool
 	}
 	c := field.And(conditions...)
 	return c.Document, c.Err
+}
+
+func (r *Repository[T, K]) tenantFilters(ctx context.Context) ([]Condition, error) {
+	if plugin.TenantSkipped(ctx) {
+		return nil, nil
+	}
+	if r.db != nil && r.db.tenant != nil {
+		documents, _, err := r.db.tenant.Conditions(ctx, r.config.Name, r.config.TenantField)
+		if errors.Is(err, plugin.ErrTenantRequired) {
+			return nil, ErrTenantRequired
+		}
+		if err != nil {
+			return nil, err
+		}
+		conditions := make([]Condition, 0, len(documents))
+		for _, document := range documents {
+			conditions = append(conditions, Condition{Document: document})
+		}
+		return conditions, nil
+	}
+	if r.config.TenantField == "" {
+		return nil, nil
+	}
+	value := ctx.Value(tenantKey{})
+	if value == nil || reflect.ValueOf(value).IsZero() {
+		return nil, ErrTenantRequired
+	}
+	return []Condition{field.New[any](r.config.TenantField).Eq(value)}, nil
 }
 
 func idOption[K ID](id K) QueryOption { return Query().Where(field.New[K]("_id").Eq(id)).Build() }

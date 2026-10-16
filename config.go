@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kuangshp/mongo-plus/internal/settings"
+	"github.com/kuangshp/mongo-plus/plugin"
 	"github.com/kuangshp/mongo-plus/sf"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -80,7 +81,9 @@ type Database struct {
 	cacheStore sf.SFCache
 	sequences  sync.Map // 集合名 -> 本包装器共享的预分配号码区间。
 	Observer   Observer
-	permission *dataPermission
+	tenant     *plugin.TenantPlugin
+	autofill   *plugin.AutoFillPlugin
+	permission *plugin.DataPermission
 	sensitive  *SensitivePlugin
 }
 
@@ -155,12 +158,16 @@ type actorKey struct{}
 
 // WithTenant 为请求上下文设置租户；仓储从上下文读取，业务过滤不能覆盖它。
 func WithTenant(ctx context.Context, id any) context.Context {
-	return context.WithValue(resolveContext(ctx), tenantKey{}, id)
+	ctx = resolveContext(ctx)
+	ctx = context.WithValue(ctx, tenantKey{}, id)
+	return plugin.WithTenantValue(ctx, id)
 }
 
-// WithActor 设置审计操作人。
+// WithActor 设置审计操作人，同时写入自动填充插件读取的操作人。
 func WithActor(ctx context.Context, id any) context.Context {
-	return context.WithValue(resolveContext(ctx), actorKey{}, id)
+	ctx = resolveContext(ctx)
+	ctx = context.WithValue(ctx, actorKey{}, id)
+	return plugin.WithOperator(ctx, id)
 }
 
 // Transaction 执行官方 Session 事务；回调必须使用 txCtx，且可能被驱动重试。

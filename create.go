@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kuangshp/mongo-plus/plugin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -92,6 +93,16 @@ func managedFieldDepth(v reflect.Value, path string, value any, depth int) (bool
 	return false, nil
 }
 
+func setBSONField(fields bson.D, key string, value any) bson.D {
+	for i, item := range fields {
+		if item.Key == key {
+			fields[i].Value = value
+			return fields
+		}
+	}
+	return append(fields, bson.E{Key: key, Value: value})
+}
+
 func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any) (preparedCreate[T], error) {
 	if entity == nil {
 		return preparedCreate[T]{}, fmt.Errorf("实体不能为空")
@@ -107,8 +118,21 @@ func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any)
 		now := time.Now().UTC().Truncate(time.Millisecond) // 与 BSON datetime 存储精度一致。
 		fields = append(fields, bson.E{Key: "created_at", Value: now}, bson.E{Key: "updated_at", Value: now})
 	}
-	if r.config.TenantField != "" {
-		fields = append(fields, bson.E{Key: r.config.TenantField, Value: ctx.Value(tenantKey{})})
+	if !plugin.TenantSkipped(ctx) {
+		if r.db != nil && r.db.tenant != nil {
+			values, _, err := r.db.tenant.CreateValues(ctx, r.config.Name, r.config.TenantField)
+			if errors.Is(err, plugin.ErrTenantRequired) {
+				return preparedCreate[T]{}, ErrTenantRequired
+			}
+			if err != nil {
+				return preparedCreate[T]{}, err
+			}
+			for path, tenantValue := range values {
+				fields = setBSONField(fields, path, tenantValue)
+			}
+		} else if r.config.TenantField != "" {
+			fields = append(fields, bson.E{Key: r.config.TenantField, Value: ctx.Value(tenantKey{})})
+		}
 	}
 	for _, path := range []string{r.config.CreatedByField, r.config.UpdatedByField} {
 		if path != "" {
@@ -116,7 +140,12 @@ func (r *Repository[T, K]) prepareCreate(ctx context.Context, entity *T, id any)
 			if actor == nil {
 				return preparedCreate[T]{}, fmt.Errorf("缺少操作人信息")
 			}
-			fields = append(fields, bson.E{Key: path, Value: actor})
+			fields = setBSONField(fields, path, actor)
+		}
+	}
+	if r.db != nil && r.db.autofill != nil {
+		for _, item := range r.db.autofill.OnCreate(ctx) {
+			fields = setBSONField(fields, item.Path, item.Value)
 		}
 	}
 	extra := bson.M{}
