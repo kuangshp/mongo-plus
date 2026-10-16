@@ -6,10 +6,9 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// DALQuery 按位置参数执行 find，返回多条记录。
+// DALQuery 按位置参数执行 find/aggregate 文件，返回多条记录；大结果集使用 DALWalk。
 func DALQuery[T any](ctx context.Context, file string, args ...any) ([]T, error) {
 	ctx = resolveContext(ctx)
 	dal, err := resolveDAL(ctx)
@@ -41,8 +40,7 @@ func DALQueryOne[T any](ctx context.Context, file string, args ...any) (*T, erro
 		if err != nil {
 			return err
 		}
-		command.op = "findOne"
-		if command.limit == nil {
+		if command.limit == nil && (command.op == "find" || command.op == "findOne") {
 			limit := int64(1)
 			command.limit = &limit
 		}
@@ -52,8 +50,9 @@ func DALQueryOne[T any](ctx context.Context, file string, args ...any) (*T, erro
 	return row, err
 }
 
-// DALQueryNamed 按命名参数执行 find。
+// DALQueryNamed 按命名参数执行 find/aggregate 文件。
 func DALQueryNamed[T any](ctx context.Context, file string, params map[string]any) ([]T, error) {
+	params = nonNilDALParams(params)
 	ctx = resolveContext(ctx)
 	dal, err := resolveDAL(ctx)
 	if err != nil {
@@ -73,6 +72,7 @@ func DALQueryNamed[T any](ctx context.Context, file string, params map[string]an
 
 // DALQueryOneNamed 按命名参数查询一条记录。不存在时返回 (nil, nil)。
 func DALQueryOneNamed[T any](ctx context.Context, file string, params map[string]any) (*T, error) {
+	params = nonNilDALParams(params)
 	ctx = resolveContext(ctx)
 	dal, err := resolveDAL(ctx)
 	if err != nil {
@@ -102,7 +102,7 @@ func DALCount(ctx context.Context, file string, args ...any) (int64, error) {
 		var command dalCommand
 		if len(args) == 1 {
 			if params, ok := args[0].(map[string]any); ok {
-				command, err = dal.command(file, nil, params)
+				command, err = dal.command(file, nil, nonNilDALParams(params))
 			}
 		}
 		if err == nil && command.collection == "" {
@@ -148,6 +148,7 @@ func DALQueryPage[T any](ctx context.Context, file string, filterArgs []any, pag
 
 // DALQueryPageNamed 执行带命名参数的分页文件。计数文件不引用 limit 和 offset 即可。
 func DALQueryPageNamed[T any](ctx context.Context, file string, params map[string]any) (DALPageResult[T], error) {
+	params = nonNilDALParams(params)
 	ctx = resolveContext(ctx)
 	dal, err := resolveDAL(ctx)
 	if err != nil {
@@ -173,7 +174,7 @@ func DALQueryPageNamed[T any](ctx context.Context, file string, params map[strin
 	return result, err
 }
 
-// DALExec 执行 insert、update 或 delete 文件。
+// DALExec 执行单条写入、bulkWrite 或以 $out/$merge 结束的聚合文件。
 func DALExec(ctx context.Context, file string, args ...any) error {
 	_, err := DALExecAffected(ctx, file, args...)
 	return err
@@ -198,6 +199,32 @@ func DALExecAffected(ctx context.Context, file string, args ...any) (*DALExecRes
 	return result, err
 }
 
+// DALExecNamed 是 DALExec 的命名参数入口。
+func DALExecNamed(ctx context.Context, file string, params map[string]any) error {
+	_, err := DALExecAffectedNamed(ctx, file, params)
+	return err
+}
+
+// DALExecAffectedNamed 执行命名参数写文件；批量明细及部分成功信息使用 DALBulkWriteNamed。
+func DALExecAffectedNamed(ctx context.Context, file string, params map[string]any) (*DALExecResult, error) {
+	ctx = resolveContext(ctx)
+	params = nonNilDALParams(params)
+	dal, err := resolveDAL(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var result *DALExecResult
+	err = dal.run(ctx, file, namedArgs(params), func() error {
+		command, err := dal.command(file, nil, params)
+		if err != nil {
+			return err
+		}
+		result, err = runDALWrite(ctx, dal, command)
+		return err
+	})
+	return result, err
+}
+
 // DALWithTx 在当前 DAL 的数据库上开启事务。回调里的 DAL 查询会使用 txCtx。
 func DALWithTx(ctx context.Context, fn func(txCtx context.Context) error) error {
 	ctx = resolveContext(ctx)
@@ -208,11 +235,12 @@ func DALWithTx(ctx context.Context, fn func(txCtx context.Context) error) error 
 	if err != nil {
 		return err
 	}
-	db, err := dal.provider.Get(ctx)
+	db, err := dalDatabase(ctx, dal)
 	if err != nil {
 		return err
 	}
 	return Transaction(ctx, db, func(txCtx context.Context) error {
+		txCtx = context.WithValue(txCtx, dalDatabaseKey{}, dalDatabaseBinding{dal: dal, db: db})
 		return fn(WithDALDB(txCtx, dal))
 	})
 }
@@ -241,43 +269,27 @@ func namedArgs(params map[string]any) []any {
 	return args
 }
 
-func dalCollection(ctx context.Context, dal *DAL, command dalCommand) (*mongo.Collection, error) {
-	db, err := dal.provider.Get(ctx)
-	if err != nil {
-		return nil, err
+func dalHookArgs(args []any, params map[string]any) []any {
+	if params != nil {
+		return namedArgs(params)
 	}
-	if _, _, err := operationContext(ctx, db, nil); err != nil {
+	return args
+}
+
+func dalCollection(ctx context.Context, dal *DAL, command dalCommand) (*mongo.Collection, error) {
+	db, err := dalDatabase(ctx, dal)
+	if err != nil {
 		return nil, err
 	}
 	return db.native.Collection(command.collection), nil
 }
 
 func runDALFind[T any](ctx context.Context, dal *DAL, command dalCommand) ([]T, error) {
-	if command.op == "aggregate" {
-		return runDALAggregate[T](ctx, dal, command)
-	}
-	collection, err := dalCollection(ctx, dal, command)
+	cursor, err := dalReadCursor(ctx, dal, command)
 	if err != nil {
 		return nil, err
 	}
-	find := options.Find()
-	if len(command.sort) > 0 {
-		find.SetSort(command.sort)
-	}
-	if len(command.projection) > 0 {
-		find.SetProjection(command.projection)
-	}
-	if command.limit != nil {
-		find.SetLimit(*command.limit)
-	}
-	if command.skip != nil {
-		find.SetSkip(*command.skip)
-	}
-	cursor, err := collection.Find(ctx, filterOrEmpty(command.filter), find)
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
+	defer closeDALCursor(ctx, cursor)
 	rows := []T{}
 	if err = cursor.All(ctx, &rows); err != nil {
 		return nil, err
@@ -286,42 +298,62 @@ func runDALFind[T any](ctx context.Context, dal *DAL, command dalCommand) ([]T, 
 }
 
 func runDALFindOne[T any](ctx context.Context, dal *DAL, command dalCommand) (*T, error) {
-	rows, err := runDALFind[T](ctx, dal, command)
+	if command.op == "find" || command.op == "findOne" {
+		value := int64(1)
+		command.limit = &value
+	}
+	cursor, err := dalReadCursor(ctx, dal, command)
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 {
-		return nil, nil
+	defer closeDALCursor(ctx, cursor)
+	if !cursor.Next(ctx) {
+		return nil, cursor.Err()
 	}
-	return &rows[0], nil
-}
-
-func runDALAggregate[T any](ctx context.Context, dal *DAL, command dalCommand) ([]T, error) {
-	collection, err := dalCollection(ctx, dal, command)
-	if err != nil {
+	var row T
+	if err := cursor.Decode(&row); err != nil {
 		return nil, err
 	}
-	pipeline := make(mongo.Pipeline, 0, len(command.pipeline))
-	for _, stage := range command.pipeline {
-		document, err := dalDocument(stage)
-		if err != nil {
-			return nil, err
-		}
-		pipeline = append(pipeline, document)
-	}
-	cursor, err := collection.Aggregate(ctx, pipeline, options.Aggregate().SetAllowDiskUse(true))
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-	rows := []T{}
-	if err = cursor.All(ctx, &rows); err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return &row, nil
 }
 
 func runDALCount(ctx context.Context, dal *DAL, command dalCommand) (int64, error) {
+	if command.op == "aggregate" {
+		cursor, err := dalReadCursor(ctx, dal, command)
+		if err != nil {
+			return 0, err
+		}
+		defer closeDALCursor(ctx, cursor)
+		if !cursor.Next(ctx) {
+			return 0, cursor.Err()
+		}
+		var row bson.D
+		if err := cursor.Decode(&row); err != nil {
+			return 0, err
+		}
+		if cursor.Next(ctx) {
+			return 0, fmt.Errorf("聚合计数必须返回一行 total")
+		}
+		if err := cursor.Err(); err != nil {
+			return 0, err
+		}
+		for _, item := range row {
+			if item.Key == "total" {
+				n, err := dalInt(item.Value)
+				if err != nil || n < 0 {
+					return 0, fmt.Errorf("total 必须是非负整数")
+				}
+				return n, nil
+			}
+		}
+		return 0, fmt.Errorf("聚合计数缺少 total 字段")
+	}
+	if command.op != "count" {
+		return 0, fmt.Errorf("DALCount 需要 op=count 或返回 total 的 aggregate")
+	}
+	if len(command.options) != 0 {
+		return 0, fmt.Errorf("count options 请通过 DALNative 配置")
+	}
 	collection, err := dalCollection(ctx, dal, command)
 	if err != nil {
 		return 0, err
@@ -330,10 +362,25 @@ func runDALCount(ctx context.Context, dal *DAL, command dalCommand) (int64, erro
 }
 
 func runDALWrite(ctx context.Context, dal *DAL, command dalCommand) (*DALExecResult, error) {
-	collection, err := dalCollection(ctx, dal, command)
+	if command.op == "aggregate" {
+		return runDALWriteAggregate(ctx, dal, command)
+	}
+	if command.op == "bulkWrite" {
+		result, err := runDALBulk(ctx, dal, command)
+		if result == nil {
+			return nil, err
+		}
+		return &DALExecResult{RowsAffected: result.InsertedCount + result.MatchedCount + result.DeletedCount + result.UpsertedCount}, err
+	}
+	if len(command.options) != 0 {
+		return nil, fmt.Errorf("单条写入 options 请通过 DALBulkWrite 或 DALNative 配置")
+	}
+	db, err := dalDatabase(ctx, dal)
 	if err != nil {
 		return nil, err
 	}
+	collection := db.native.Collection(command.collection)
+	defer invalidateDALWrites(ctx, db, append([]string{command.collection}, command.invalidates...))
 	switch command.op {
 	case "insertOne":
 		result, err := collection.InsertOne(ctx, command.document)

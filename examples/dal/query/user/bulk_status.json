@@ -1,0 +1,17 @@
+{
+  "collection": "users",
+  "op": "bulkWrite",
+  "options": {"ordered": true},
+  "operations": [
+    {
+      "op": "updateOne",
+      "filter": {"_id": "@enabledID", "company_id": "@companyID", "deleted_at": null},
+      "update": {"$set": {"status": 1, "updated_at": "@now"}}
+    },
+    {
+      "op": "updateOne",
+      "filter": {"_id": "@disabledID", "company_id": "@companyID", "deleted_at": null},
+      "update": {"$set": {"status": 2, "updated_at": "@now"}}
+    }
+  ]
+}

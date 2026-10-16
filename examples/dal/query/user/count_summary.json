@@ -1,0 +1,9 @@
+{
+  "collection": "users",
+  "op": "aggregate",
+  "pipeline": [
+    {"$match": {"company_id": "@companyID", "deleted_at": null}},
+    {"$group": {"_id": "$dept_id"}},
+    {"$count": "total"}
+  ]
+}

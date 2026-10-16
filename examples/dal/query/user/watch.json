@@ -1,0 +1,17 @@
+{
+  "collection": "users",
+  "op": "watch",
+  "pipeline": [
+    {"$match": {
+      "operationType": {"$in": ["insert", "update", "replace"]},
+      "fullDocument.company_id": "@companyID",
+      "fullDocument.deleted_at": null
+    }}
+  ],
+  "options": {
+    "fullDocument": "updateLookup",
+    "resumeAfter": "@resumeToken",
+    "maxAwaitTimeMS": 1000,
+    "batchSize": 100
+  }
+}

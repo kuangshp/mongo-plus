@@ -1110,7 +1110,7 @@ err := mongoplus.Transaction(ctx, db, func(txCtx context.Context) error {
 
 ### 原生聚合扩展
 
-原有 `mongoplus.Aggregate[Result](ctx, r.Repository, pipeline)` 继续支持只读单集合 Match、Project、Group、Sort、Unwind 等阶段。多集合等值查询使用上面的 Repository 链式构造器。Union、GraphLookup、Out/Merge、Search/GeoNear 等高级管道通过自定义仓储的 Native 显式实现，并处理对应集合的权限和数据生命周期。
+原有 `mongoplus.Aggregate[Result](ctx, r.Repository, pipeline)` 继续支持只读单集合 Match、Project、Group、Sort、Unwind 等阶段。多集合等值查询使用上面的 Repository 链式构造器。Union、GraphLookup、Out/Merge、Search/GeoNear 等高级管道可放在 [DAL 查询文件](docs/dal.md) 并通过业务仓储调用；文件未覆盖的选项通过 DALNative 扩展，明确处理集合权限和数据生命周期。
 
 接口习惯与 gorm-plus 接近，底层使用 BSON 过滤和 MongoDB 聚合。已有 GORM 条件不能直接传入。本版不提供 SQL、FOR UPDATE 或 GORM 插件兼容层。数据层生成器不自动暴露 HTTP 接口；可选 go-zero 模板根据独立的 .api 文件生成 HTTP 层和 Swagger，见下方说明。
 
@@ -1267,7 +1267,7 @@ err := userRepository.WithContext(ctx).
 
 完整用法参考 [订单统计示例](examples/statistics/main.go)，包含全部订单汇总、分类金额分页与标签计数。
 
-当前链式封装覆盖上表常用统计，不代表所有 MongoDB 运算符均已封装。日期表达式、条件计算、Bucket、窗口函数等可在自定义仓储中使用原生聚合；原有 `mongoplus.Aggregate[VO](ctx, r.Repository, pipeline)` 支持白名单内的单集合只读管道。涉及额外集合或写入的原生阶段需通过 Native 显式处理权限、事务与数据生命周期。
+当前链式封装覆盖上表常用统计，不代表所有 MongoDB 运算符均已封装。日期表达式、条件计算、Bucket、窗口函数等可放入 [DAL 聚合文件](docs/dal.md)；原有 `mongoplus.Aggregate[VO](ctx, r.Repository, pipeline)` 支持白名单内的单集合只读管道。涉及额外集合或写入的阶段通过 DAL 文件或 DALNative 显式处理权限、事务与数据生命周期。
 
 ## 13. go-zero 模板与中文参数校验
 
@@ -1342,7 +1342,7 @@ build: swagger
 
 已有服务重新生成时不会自动覆盖所有旧入口和 Handler，应先对照新版模板合并所需功能，保留业务代码。
 
-## 14. 敏感字段、主从数据源与查询文件
+## 14. 敏感字段与主从数据源
 
 ### 敏感字段
 
@@ -1377,30 +1377,57 @@ db, err = mongoplus.DS.Auto(mongoplus.DSWithName(ctx, "analytics"))
 
 `DS.Read`、`DS.Write`、`DS.Ping` 和 `DS.Close` 用于显式选择、健康检查和关闭。同一个数据库包装器只关闭一次。
 
-### JSON 查询文件
+## 15. DAL 原生查询文件与仓储扩展
 
-复杂查询可以放在 JSON 文件里，调用名与 gorm-plus 的 DAL 对应。文件内容是集合、操作和 BSON，占位符用 `?` 或 `@name`，不解析 SQL。文件中的条件不会自动追加租户、数据权限和逻辑删除，需要写在文件里。更新和删除必须带 filter，整集操作要在文件中写 `"allowAll": true`。
+对应 gorm-plus 的原始 SQL 文件层，MongoDB 使用 **JSON / Extended JSON 查询文件**，不解析 SQL。查询文件统一放在 `internal/dal/query`，复杂聚合、批量写入和订阅通过非生成的业务 Repository 调用，业务层只注入和调用 Repository。
+
+| 需求 | DAL 入口 |
+| --- | --- |
+| 普通查询 / 复杂原生聚合 | `DALQuery` / `DALQueryNamed`，支持 find / aggregate |
+| 分页与聚合计数 | `DALQueryPage` / `DALQueryPageNamed`，配套 `count_` 文件 |
+| 大结果集流式导出 | `DALWalk` / `DALWalkNamed` |
+| 特殊混合批量、upsert、更新管道 | `DALBulkWrite` / `DALBulkWriteNamed`，返回官方结果与部分成功信息 |
+| 变更订阅及 resume token | `DALWatch` / `DALWatchNamed`，返回官方 ChangeStream |
+| 单条写入 / 写入聚合 | `DALExec` / `DALExecNamed`，支持显式 `$out/$merge` |
+| 其余官方 API / 细粒度选项 | `DALNative`，声明写入集合并沿用 DAL 数据源、Hook 与缓存失效 |
+| 业务仓储绑定事务 | `Repository.WithDAL`，沿用 `WithTx` 的事务和仓储数据源 |
+
+`user/page.json`：
 
 ```json
-{"collection":"users","op":"find","filter":{"status":"?"},"limit":"?","skip":"?"}
+{
+  "collection": "users",
+  "op": "find",
+  "filter": {"company_id": "@companyID", "deleted_at": null, "status": "@status"},
+  "sort": {"_id": 1},
+  "limit": "@limit",
+  "skip": "@offset"
+}
 ```
 
 ```go
-//go:embed rawquery
-var queryFS embed.FS
+// 启动时使用 embed.FS 加载内部查询目录，创建一次并注入自定义仓储。
+// query.Files 在 internal/dal/query/files.go 中通过 go:embed 声明。
+dal, err := mongoplus.NewDal(db, mongoplus.NewEmbedLoader(query.Files))
 
-sub, err := fs.Sub(queryFS, "rawquery")
-dal, err := mongoplus.NewDal(db, mongoplus.NewEmbedLoader(sub))
-defer dal.Close()
-
-rows, err := mongoplus.DALQuery[UserVO](ctx, "user/page.json", int32(1), int64(10), int64(0))
-page, err := mongoplus.DALQueryPage[UserVO](ctx, "user/page.json", []any{int32(1)}, []any{int64(10), int64(0)})
-err = mongoplus.DALWithTx(ctx, func(txCtx context.Context) error {
-    return mongoplus.DALExec(txCtx, "user/disable.json", userID)
+// 业务仓储扩展方法内部：WithDAL 自动沿用该仓储的数据源和 WithTx。
+err = r.Repository.WithDAL(ctx, dal, func(queryCtx context.Context) error {
+    offset, limit := mongoplus.DbPage(pageNumber, pageSize)
+    page, err = mongoplus.DALQueryPageNamed[UserVO](queryCtx, "user/page.json", map[string]any{
+        "companyID": companyID, // 从服务端鉴权上下文获取。
+        "status":    int64(1),
+        "offset":    offset,
+        "limit":     limit,
+    })
+    return err
 })
 ```
 
-分页计数文件是数据文件名前加 `count_`，例如 `user/page.json` 对应 `user/count_page.json`。`DALQueryPage` 的 `filterArgs` 会传给数据文件和计数文件，`pageArgs` 只追加在数据文件的过滤参数后面。`DALQueryOne` 找不到记录时返回 `(nil, nil)`。`WithDALDebug`、`WithDALHook` 和 `DALPreload` 用于开发日志、耗时回调和启动预热。`NewDal` 会把它设为进程默认实例，之后的 `DALQuery` 和 `DALExec` 使用这个实例。
+计数文件为 `user/count_page.json`，过滤一致，`op=count`；聚合计数使用 `op=aggregate` 并返回 `total`。DAL 写入会通知相关 Repository 缓存失效，本库事务在提交后发布，回滚不失效；部分写入失败也保守处理。
+
+DAL 文件不会自动添加租户、严格数据权限、软删除或审计字段，`WithDAL` 负责数据源/事务绑定，条件仍需在每个集合及子管道中明确编写。物理删除事件的租户识别、订阅检查点和重复事件由消费者处理。
+
+完整的属性/选项表、参数绑定、变更订阅恢复、批量部分成功与事务边界见 [DAL 使用文档](docs/dal.md)。可复制的 [业务仓储示例](examples/dal/README.md) 和 [JSON 文件](examples/dal/query/user/summary.json) 均有真实数据库回归验证。
 
 ## 性能与生产使用
 

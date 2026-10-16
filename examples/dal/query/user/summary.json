@@ -1,0 +1,25 @@
+{
+  "collection": "users",
+  "op": "aggregate",
+  "pipeline": [
+    {"$match": {"company_id": "@companyID", "deleted_at": null}},
+    {"$lookup": {
+      "from": "departments",
+      "let": {"deptID": "$dept_id"},
+      "pipeline": [
+        {"$match": {"company_id": "@companyID", "deleted_at": null, "$expr": {"$eq": ["$_id", "$$deptID"]}}}
+      ],
+      "as": "department"
+    }},
+    {"$unwind": {"path": "$department", "preserveNullAndEmptyArrays": true}},
+    {"$group": {"_id": "$dept_id", "department_name": {"$first": "$department.name"}, "users": {"$sum": 1}}},
+    {"$project": {"_id": 0, "department_id": "$_id", "department_name": {"$ifNull": ["$department_name", "未分配"]}, "users": 1}},
+    {"$sort": {"department_id": 1}},
+    {"$skip": "@offset"},
+    {"$limit": "@limit"}
+  ],
+  "options": {
+    "allowDiskUse": true,
+    "batchSize": 100
+  }
+}

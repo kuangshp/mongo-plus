@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"golang.org/x/sync/singleflight"
 )
@@ -85,7 +87,7 @@ func (l embedLoader) Load(name string) ([]byte, error) {
 	return data, nil
 }
 
-// WithDALDebug 打印每次查询的文件、耗时和参数。
+// WithDALDebug 打印文件、耗时、参数个数和失败标记，不输出参数值和服务端错误详情。
 func WithDALDebug(enabled bool) DALOption {
 	return func(d *DAL) { d.debug = enabled }
 }
@@ -162,8 +164,17 @@ func DALPreload(files ...string) error {
 	if err != nil {
 		return err
 	}
+	return dal.Preload(files...)
+}
+
+// Preload 预加载当前实例的文件，适用于不依赖全局默认 DAL 的多数据源项目。
+// 这里只检查文件读取；带参数文件的语义在实际绑定参数时校验。
+func (d *DAL) Preload(files ...string) error {
+	if d == nil {
+		return fmt.Errorf("DAL 不能为空")
+	}
 	for _, file := range files {
-		if _, err = dal.load(file); err != nil {
+		if _, err := d.load(file); err != nil {
 			return err
 		}
 	}
@@ -207,17 +218,20 @@ func (d *DAL) load(name string) ([]byte, error) {
 }
 
 type dalCommand struct {
-	collection string
-	op         string
-	filter     bson.D
-	sort       bson.D
-	projection bson.D
-	pipeline   bson.A
-	update     bson.D
-	document   bson.D
-	limit      *int64
-	skip       *int64
-	allowAll   bool
+	collection  string
+	op          string
+	filter      bson.D
+	sort        bson.D
+	projection  bson.D
+	pipeline    bson.A
+	update      bson.D
+	document    bson.D
+	limit       *int64
+	skip        *int64
+	allowAll    bool
+	options     bson.D
+	operations  bson.A
+	invalidates []string
 }
 
 func (d *DAL) command(file string, positional []any, named map[string]any) (dalCommand, error) {
@@ -246,14 +260,21 @@ func (d *DAL) command(file string, positional []any, named map[string]any) (dalC
 
 func commandFromDocument(doc bson.D) (dalCommand, error) {
 	command := dalCommand{op: "find"}
+	seen := make(map[string]bool, len(doc))
 	for _, item := range doc {
+		if seen[item.Key] {
+			return dalCommand{}, fmt.Errorf("重复查询文件属性 %s", item.Key)
+		}
+		seen[item.Key] = true
 		switch item.Key {
 		case "collection":
 			command.collection, _ = item.Value.(string)
 		case "op":
-			if text, ok := item.Value.(string); ok && text != "" {
-				command.op = text
+			text, ok := item.Value.(string)
+			if !ok || text == "" {
+				return dalCommand{}, fmt.Errorf("op 必须是非空字符串")
 			}
+			command.op = text
 		case "filter":
 			filter, err := dalDocument(item.Value)
 			if err != nil {
@@ -303,18 +324,55 @@ func commandFromDocument(doc bson.D) (dalCommand, error) {
 			}
 			command.skip = &skip
 		case "allowAll":
-			command.allowAll, _ = item.Value.(bool)
+			value, ok := item.Value.(bool)
+			if !ok {
+				return dalCommand{}, fmt.Errorf("allowAll 必须是 bool")
+			}
+			command.allowAll = value
+		case "options":
+			value, err := dalDocument(item.Value)
+			if err != nil {
+				return dalCommand{}, fmt.Errorf("options: %w", err)
+			}
+			command.options = value
+			keys := make(map[string]bool, len(value))
+			for _, option := range value {
+				if keys[option.Key] {
+					return dalCommand{}, fmt.Errorf("重复 options.%s", option.Key)
+				}
+				keys[option.Key] = true
+			}
+		case "operations":
+			value, ok := item.Value.(bson.A)
+			if !ok {
+				return dalCommand{}, fmt.Errorf("operations 必须是数组")
+			}
+			command.operations = value
+		case "invalidates":
+			value, ok := item.Value.(bson.A)
+			if !ok {
+				return dalCommand{}, fmt.Errorf("invalidates 必须是集合名数组")
+			}
+			for _, name := range value {
+				text, ok := name.(string)
+				if !ok || !validDALCollection(text) {
+					return dalCommand{}, fmt.Errorf("invalidates 包含无效集合名")
+				}
+				command.invalidates = append(command.invalidates, text)
+			}
+		default:
+			return dalCommand{}, fmt.Errorf("不支持的查询文件属性 %s", item.Key)
 		}
 	}
-	if command.collection == "" {
-		return dalCommand{}, fmt.Errorf("查询文件缺少 collection")
+	if !validDALCollection(command.collection) {
+		return dalCommand{}, fmt.Errorf("查询文件 collection 为空、无效或使用保留名称")
 	}
 	switch command.op {
 	case "update", "updateOne", "updateMany", "delete", "deleteOne", "deleteMany":
 		if len(command.filter) == 0 && !command.allowAll {
 			return dalCommand{}, fmt.Errorf("写操作必须提供 filter，或在文件中设置 allowAll")
 		}
-	case "find", "findOne", "count", "aggregate", "insertOne":
+	case "find", "findOne", "count", "aggregate", "insertOne", "watch", "bulkWrite":
 	default:
 		return dalCommand{}, fmt.Errorf("不支持的操作 %s", command.op)
 	}
@@ -399,6 +457,9 @@ func dalInt(value any) (int64, error) {
 	case int64:
 		return typed, nil
 	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || math.Trunc(typed) != typed || typed < -0x1p63 || typed >= 0x1p63 {
+			return 0, fmt.Errorf("需要 int64 范围内的整数")
+		}
 		return int64(typed), nil
 	default:
 		return 0, fmt.Errorf("需要整数，实际 %T", value)
@@ -424,7 +485,11 @@ func (d *DAL) run(ctx context.Context, file string, args []any, fn func() error)
 		hook.After(ctx, file, args, cost, err)
 	}
 	if d.debug {
-		log.Printf("dal file=%s cost=%s args=%d err=%v", file, cost, len(args), err)
+		log.Printf("dal file=%s cost=%s args=%d failed=%t", file, cost, len(args), err != nil)
 	}
 	return err
+}
+
+func validDALCollection(name string) bool {
+	return strings.TrimSpace(name) != "" && !strings.ContainsRune(name, '\x00') && !settings.ReservedCollection(name)
 }

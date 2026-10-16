@@ -1,0 +1,7 @@
+{
+  "collection": "users",
+  "op": "find",
+  "filter": {"company_id": "@companyID", "deleted_at": null},
+  "sort": {"_id": 1},
+  "options": {"batchSize": 100}
+}

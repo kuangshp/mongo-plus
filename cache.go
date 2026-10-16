@@ -55,19 +55,24 @@ type txCacheKey struct{}
 type txCaches map[*Database]map[string]bool
 
 func (r *Repository[T, K]) invalidate(ctx context.Context) {
+	r.db.invalidateWrite(ctx, r.config.Name)
+}
+
+// invalidateWrite 统一处理 Repository、DAL 与原生回调的写后失效时序。
+func (d *Database) invalidateWrite(ctx context.Context, collection string) {
 	if state, ok := ctx.Value(txCacheKey{}).(txCaches); ok {
-		if state[r.db] == nil {
-			state[r.db] = map[string]bool{}
+		if state[d] == nil {
+			state[d] = map[string]bool{}
 		}
-		state[r.db][r.config.Name] = true
+		state[d][collection] = true
 		return
 	}
 	if mongo.SessionFromContext(ctx) != nil {
 		// 外部 Session 无法获知提交时机，同 Client 同库的包装器都必须禁用。
-		r.db.invalidatePeers(r.config.Name, true)
+		d.invalidatePeers(collection, true)
 		return
 	}
-	r.db.InvalidateCache(r.config.Name)
+	d.InvalidateCache(collection)
 }
 
 func readCached[V any](ctx context.Context, db *Database, scope, method string, key bson.D, o QueryOption, load func() (V, error)) (V, error) {

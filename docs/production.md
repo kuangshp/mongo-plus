@@ -84,7 +84,7 @@ MongoDB 的 DDL 和回填不会整体原子回滚。推荐采用：先增加兼�
 
 原有 `schema.Apply`（包括生成器同步和 CLI `schema apply`）及 `migration.Backfill` 也参与同一个锁。在 Up/Down 内必须沿用回调传入的 Context，才能复用已持有的锁；传事务外的旧 Context 会因锁冲突而报错。原生管理命令不受本包控制，不要从其他发布进程并发执行 DDL。
 
-Apply 会保留内部锁集合，即使操作完成后其中没有锁记录，它也不是业务集合。原生迁移/回填不会自动触发业务进程的 Repository 缓存失效；发布流程需要通知共享缓存失效、切换已规划的新 Namespace，或在迁移阶段关闭相关缓存，确认完成后再收紧校验规则。
+Apply 会保留内部锁集合，即使操作完成后其中没有锁记录，它也不是业务集合。DAL 原生查询文件、批量和扩展回调的事务/缓存接入见 [DAL 文档](dal.md#原生扩展事务与缓存)。原生迁移/回填不会自动触发业务进程的 Repository 缓存失效；发布流程需要通知共享缓存失效、切换已规划的新 Namespace，或在迁移阶段关闭相关缓存，确认完成后再收紧校验规则。
 
 ```go
 modified, err := migration.Backfill(ctx, db.Collection("users"),
