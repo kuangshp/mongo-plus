@@ -1,0 +1,53 @@
+package perfcompare
+import (
+ "context"
+ "os"
+ "strings"
+ "testing"
+ "time"
+ mp "github.com/kuangshp/mongo-plus"
+ "github.com/kuangshp/mongo-plus/field"
+ "go.mongodb.org/mongo-driver/v2/bson"
+ "go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+type document struct {
+ ID int64 `bson:"_id"`
+ Payload string `bson:"payload"`
+ Version int64 `bson:"version"`
+}
+// Same client, collection, full document, BSON types, write concern and operation semantics.
+// No cache, no plugins, no HTTP, and no race instrumentation during timing.
+func BenchmarkCompare(b *testing.B) {
+ ctx:=context.Background()
+ db,err:=mp.Connect(ctx,mp.Config{URI:os.Getenv("MONGOPLUS_TEST_URI"),Database:"mongo_plus_perf_compare_"+bson.NewObjectID().Hex(),MaxPoolSize:64})
+ if err!=nil {b.Fatal(err)}
+ b.Cleanup(func(){c,cancel:=context.WithTimeout(context.Background(),20*time.Second);defer cancel();if err:=db.Native().Drop(c);err!=nil {b.Error(err)};if err:=db.Close(c);err!=nil {b.Error(err)}})
+ repo:=mp.MustRepository[document,int64](db,mp.CollectionConfig{Name:"documents",ID:mp.IDConfig{Type:mp.IDTypeInt64,Generation:mp.IDGenerationManual}})
+ if err:=repo.Create(ctx,&document{ID:1,Payload:strings.Repeat("x",256)});err!=nil {b.Fatal(err)}
+ for _,operation:=range []string{"Read","Update"} {
+  for _,mode:=range []string{"Driver","Repository"} {
+   b.Run(operation+"/"+mode,func(b *testing.B){
+    b.ReportAllocs()
+    for i:=0;i<b.N;i++ {
+     if operation=="Read" {
+      if mode=="Driver" {
+       var got document
+       err:=repo.Native().FindOne(ctx,bson.D{{Key:"_id",Value:int64(1)}},options.FindOne().SetSkip(0)).Decode(&got)
+       if err!=nil || got.ID!=1 {b.Fatalf("read: %v %#v",err,got)}
+      } else {
+       got,err:=repo.FindById(ctx,int64(1));if err!=nil || got.ID!=1 {b.Fatalf("read: %v %#v",err,got)}
+      }
+     } else {
+      if mode=="Driver" {
+       result,err:=repo.Native().UpdateOne(ctx,bson.D{{Key:"_id",Value:int64(1)}},bson.D{{Key:"$inc",Value:bson.D{{Key:"version",Value:int64(1)}}}})
+       if err!=nil || !result.Acknowledged || result.MatchedCount!=1 {b.Fatalf("update: %v %#v",err,result)}
+      } else {
+       result,err:=repo.UpdateById(ctx,int64(1),field.NewNumeric[int64]("version").Inc(1))
+       if err!=nil || !result.Acknowledged || result.MatchedCount!=1 {b.Fatalf("update: %v %#v",err,result)}
+      }
+     }
+    }
+   })
+  }
+ }
+}

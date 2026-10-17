@@ -1,0 +1,48 @@
+Measured source commit: 0c151fda365ad5d8f29438bbce0cf241944b4b29
+
+goos: darwin
+goarch: arm64
+pkg: perfcompare
+cpu: Apple M4 Pro
+BenchmarkCompare/Read/Driver-12         	   26322	     44716 ns/op	   14315 B/op	     103 allocs/op
+BenchmarkCompare/Read/Driver-12         	   26761	     45403 ns/op	   14314 B/op	     103 allocs/op
+BenchmarkCompare/Read/Driver-12         	   26407	     45356 ns/op	   14315 B/op	     103 allocs/op
+BenchmarkCompare/Read/Repository-12     	   24753	     47883 ns/op	   15552 B/op	     121 allocs/op
+BenchmarkCompare/Read/Repository-12     	   25410	     48136 ns/op	   15550 B/op	     121 allocs/op
+BenchmarkCompare/Read/Repository-12     	   24801	     48408 ns/op	   15553 B/op	     121 allocs/op
+BenchmarkCompare/Update/Driver-12       	      97	  11398612 ns/op	    8669 B/op	     107 allocs/op
+BenchmarkCompare/Update/Driver-12       	     100	  10379568 ns/op	    8653 B/op	     107 allocs/op
+BenchmarkCompare/Update/Driver-12       	     100	  10302941 ns/op	    8666 B/op	     107 allocs/op
+BenchmarkCompare/Update/Repository-12   	     100	  11674159 ns/op	    9706 B/op	     134 allocs/op
+BenchmarkCompare/Update/Repository-12   	     100	  10915553 ns/op	    9706 B/op	     134 allocs/op
+BenchmarkCompare/Update/Repository-12   	     100	  11415573 ns/op	    9777 B/op	     134 allocs/op
+PASS
+ok  	perfcompare	17.418s
+
+goos: darwin
+goarch: arm64
+pkg: github.com/kuangshp/mongo-plus
+cpu: Apple M4 Pro
+BenchmarkRepository/FindById-12         	   23718	     48942 ns/op	   15486 B/op	     121 allocs/op
+BenchmarkRepository/FindById-12         	   24948	     46581 ns/op	   15488 B/op	     121 allocs/op
+BenchmarkRepository/FindById-12         	   24338	     48978 ns/op	   15487 B/op	     121 allocs/op
+BenchmarkRepository/NativeInsertMany100-12         	     100	  13346675 ns/op	  616812 B/op	    2680 allocs/op
+BenchmarkRepository/NativeInsertMany100-12         	      85	  12711668 ns/op	  622516 B/op	    2680 allocs/op
+BenchmarkRepository/NativeInsertMany100-12         	     100	  12462403 ns/op	  629962 B/op	    2681 allocs/op
+BenchmarkRepository/CreateBatch100-12              	     100	  12280518 ns/op	  637008 B/op	    3196 allocs/op
+BenchmarkRepository/CreateBatch100-12              	     100	  12203908 ns/op	  645068 B/op	    3194 allocs/op
+BenchmarkRepository/CreateBatch100-12              	     100	  12296232 ns/op	  646130 B/op	    3194 allocs/op
+BenchmarkRepository/CreateInt64Block0-12           	      54	  22868417 ns/op	   25128 B/op	     236 allocs/op
+BenchmarkRepository/CreateInt64Block0-12           	      56	  22969617 ns/op	   25099 B/op	     236 allocs/op
+BenchmarkRepository/CreateInt64Block0-12           	      55	  22209220 ns/op	   25230 B/op	     237 allocs/op
+BenchmarkRepository/CreateBatchInt64Block0-12      	      49	  23136504 ns/op	  710407 B/op	    2933 allocs/op
+BenchmarkRepository/CreateBatchInt64Block0-12      	      50	  24041825 ns/op	  719473 B/op	    2935 allocs/op
+BenchmarkRepository/CreateBatchInt64Block0-12      	      69	  23407841 ns/op	  709285 B/op	    2939 allocs/op
+BenchmarkRepository/CreateInt64Block100-12         	     100	  11707073 ns/op	   11893 B/op	     107 allocs/op
+BenchmarkRepository/CreateInt64Block100-12         	     102	  11784181 ns/op	   11823 B/op	     108 allocs/op
+BenchmarkRepository/CreateInt64Block100-12         	      98	  11948476 ns/op	   11887 B/op	     108 allocs/op
+BenchmarkRepository/CreateBatchInt64Block100-12    	      54	  23888282 ns/op	  694643 B/op	    2931 allocs/op
+BenchmarkRepository/CreateBatchInt64Block100-12    	      55	  23841296 ns/op	  705477 B/op	    2932 allocs/op
+BenchmarkRepository/CreateBatchInt64Block100-12    	      45	  23426936 ns/op	  723149 B/op	    2945 allocs/op
+PASS
+ok  	github.com/kuangshp/mongo-plus	30.615s

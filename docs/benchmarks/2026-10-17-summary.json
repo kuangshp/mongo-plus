@@ -1,0 +1,696 @@
+{
+  "environment": {
+    "commit": "0c151fda365ad5d8f29438bbce0cf241944b4b29",
+    "platform": "macOS-15.7.3-arm64-arm-64bit",
+    "cpu": "Apple M4 Pro",
+    "cpus": 12,
+    "memoryBytes": 51539607552,
+    "mongodb": "8.0.0",
+    "replicas": 3,
+    "writeConcern": "majority",
+    "journal": true,
+    "readPreference": "primary",
+    "wiredTigerCacheGiBPerNode": 0.5,
+    "cache": "disabled",
+    "commandLog": "disabled",
+    "workload": "closed-loop 80% random indexed _id reads / 20% $inc updates, 256-byte payload",
+    "latencyIncludes": "repository + local network + database + driver pool wait; excludes HTTP and business logic"
+  },
+  "concurrency": [
+    {
+      "concurrency": 1,
+      "runs": 3,
+      "totalOperations": 11423,
+      "errors": 0,
+      "medianOpsPerSec": 477.47555671319407,
+      "minOpsPerSec": 462.38553966112386,
+      "maxOpsPerSec": 487.1705892621229,
+      "medianP95Ms": 10.194233725911042,
+      "medianP99Ms": 13.220285525118777,
+      "medianReadP95Ms": 0.45052573728701883,
+      "medianWriteP95Ms": 13.220285525118777,
+      "maxObservedP99Ms": 14.732510922524742,
+      "peakHeapMiB": 3.195892333984375
+    },
+    {
+      "concurrency": 8,
+      "runs": 3,
+      "totalOperations": 59942,
+      "errors": 0,
+      "medianOpsPerSec": 2494.909104841713,
+      "minOpsPerSec": 2453.693380504543,
+      "maxOpsPerSec": 2532.5596080337796,
+      "medianP95Ms": 16.777216,
+      "medianP99Ms": 19.524063320280913,
+      "medianReadP95Ms": 0.34740283458446725,
+      "medianWriteP95Ms": 19.524063320280913,
+      "maxObservedP99Ms": 19.524063320280913,
+      "peakHeapMiB": 2.7772216796875
+    },
+    {
+      "concurrency": 32,
+      "runs": 3,
+      "totalOperations": 236829,
+      "errors": 0,
+      "medianOpsPerSec": 9746.09676857156,
+      "minOpsPerSec": 9736.783689186857,
+      "maxOpsPerSec": 10071.665532924177,
+      "medianP95Ms": 16.0659170825886,
+      "medianP99Ms": 18.696307088067687,
+      "medianReadP95Ms": 0.6234870199105466,
+      "medianWriteP95Ms": 18.696307088067687,
+      "maxObservedP99Ms": 19.524063320280913,
+      "peakHeapMiB": 4.757598876953125
+    },
+    {
+      "concurrency": 64,
+      "runs": 3,
+      "totalOperations": 431396,
+      "errors": 0,
+      "medianOpsPerSec": 18101.743904932897,
+      "minOpsPerSec": 16885.685208444083,
+      "maxOpsPerSec": 18860.22933640559,
+      "medianP95Ms": 17.520006810921725,
+      "medianP99Ms": 21.75735732572379,
+      "medianReadP95Ms": 0.9615484316073813,
+      "medianWriteP95Ms": 21.75735732572379,
+      "maxObservedP99Ms": 23.726566406062886,
+      "peakHeapMiB": 7.10040283203125
+    },
+    {
+      "concurrency": 128,
+      "runs": 3,
+      "totalOperations": 815128,
+      "errors": 0,
+      "medianOpsPerSec": 35232.44614920447,
+      "minOpsPerSec": 31076.93264262535,
+      "maxOpsPerSec": 35342.22876139918,
+      "medianP95Ms": 17.520006810921725,
+      "medianP99Ms": 20.834916754444247,
+      "medianReadP95Ms": 1.6171252584629572,
+      "medianWriteP95Ms": 20.834916754444247,
+      "maxObservedP99Ms": 25.874004135407315,
+      "peakHeapMiB": 13.382232666015625
+    },
+    {
+      "concurrency": 256,
+      "runs": 3,
+      "totalOperations": 1157863,
+      "errors": 0,
+      "medianOpsPerSec": 48155.10207659768,
+      "minOpsPerSec": 46444.82830956789,
+      "maxOpsPerSec": 49805.297510626326,
+      "medianP95Ms": 21.291142023812462,
+      "medianP99Ms": 27.01954416502434,
+      "medianReadP95Ms": 5.680159457539596,
+      "medianWriteP95Ms": 27.01954416502434,
+      "maxObservedP99Ms": 28.833647186369205,
+      "peakHeapMiB": 27.428787231445312
+    }
+  ],
+  "extra": [
+    {
+      "startedAt": "2026-10-17T10:33:15.688172Z",
+      "libraryVersion": "v0.1.0",
+      "goVersion": "go1.26.9",
+      "platform": "darwin/arm64",
+      "cpus": 12,
+      "database": "mongo_plus_loadtest_6ad34ee78a77abf5c3646341",
+      "seed": 100000,
+      "concurrency": 32,
+      "readPercent": 100,
+      "payloadBytes": 256,
+      "warmupSeconds": 2,
+      "durationSeconds": 10.00050025,
+      "qps": 71789.50872982579,
+      "errorRate": 0,
+      "all": {
+        "count": 717931,
+        "errors": 0,
+        "p50Ms": 0.4042813146157393,
+        "p95Ms": 1.0041198176617876,
+        "p99Ms": 1.3021822971527655,
+        "maxMs": 8.930208,
+        "meanMs": 0.4440824843014162
+      },
+      "reads": {
+        "count": 717931,
+        "errors": 0,
+        "p50Ms": 0.4042813146157393,
+        "p95Ms": 1.0041198176617876,
+        "p99Ms": 1.3021822971527655,
+        "maxMs": 8.930208,
+        "meanMs": 0.4440824843014162
+      },
+      "writes": {
+        "count": 0,
+        "errors": 0,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "p99Ms": 0,
+        "maxMs": 0,
+        "meanMs": 0
+      },
+      "peakHeapAllocBytes": 5205808,
+      "endHeapAllocBytes": 3200568,
+      "endRuntimeSysBytes": 28395784,
+      "peakGoroutines": 95,
+      "gcCount": 6419,
+      "passed": true,
+      "failures": [],
+      "notes": [
+        "Synthetic primary-key read/update workload; cache disabled; not a business capacity guarantee.",
+        "Latency percentiles are histogram upper bounds with less than approximately 2.2% bucket error.",
+        "Heap metrics include the load generator; RuntimeSys is not process RSS. Database is dropped after the run."
+      ],
+      "name": "read-only-c32",
+      "exit": 0
+    },
+    {
+      "startedAt": "2026-10-17T10:33:29.791874Z",
+      "libraryVersion": "v0.1.0",
+      "goVersion": "go1.26.9",
+      "platform": "darwin/arm64",
+      "cpus": 12,
+      "database": "mongo_plus_loadtest_6ad34ef607f4465bb046f383",
+      "seed": 100000,
+      "concurrency": 32,
+      "readPercent": 0,
+      "payloadBytes": 256,
+      "warmupSeconds": 2,
+      "durationSeconds": 10.016226917,
+      "qps": 1965.0113923232718,
+      "errorRate": 0,
+      "all": {
+        "count": 19682,
+        "errors": 0,
+        "p50Ms": 16.0659170825886,
+        "p95Ms": 19.95158463713749,
+        "p99Ms": 23.21815501424171,
+        "maxMs": 40.638417,
+        "meanMs": 16.27234182638959
+      },
+      "reads": {
+        "count": 0,
+        "errors": 0,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "p99Ms": 0,
+        "maxMs": 0,
+        "meanMs": 0
+      },
+      "writes": {
+        "count": 19682,
+        "errors": 0,
+        "p50Ms": 16.0659170825886,
+        "p95Ms": 19.95158463713749,
+        "p99Ms": 23.21815501424171,
+        "maxMs": 40.638417,
+        "meanMs": 16.27234182638959
+      },
+      "peakHeapAllocBytes": 3977008,
+      "endHeapAllocBytes": 2775760,
+      "endRuntimeSysBytes": 24201480,
+      "peakGoroutines": 89,
+      "gcCount": 138,
+      "passed": true,
+      "failures": [],
+      "notes": [
+        "Synthetic primary-key read/update workload; cache disabled; not a business capacity guarantee.",
+        "Latency percentiles are histogram upper bounds with less than approximately 2.2% bucket error.",
+        "Heap metrics include the load generator; RuntimeSys is not process RSS. Database is dropped after the run."
+      ],
+      "name": "write-only-c32",
+      "exit": 0
+    },
+    {
+      "startedAt": "2026-10-17T10:34:00.099085Z",
+      "libraryVersion": "v0.1.0",
+      "goVersion": "go1.26.9",
+      "platform": "darwin/arm64",
+      "cpus": 12,
+      "database": "mongo_plus_loadtest_6ad34f0412ef3711ec51475f",
+      "seed": 1000000,
+      "concurrency": 64,
+      "readPercent": 80,
+      "payloadBytes": 256,
+      "warmupSeconds": 3,
+      "durationSeconds": 15.017725916,
+      "qps": 17127.892827365675,
+      "errorRate": 0,
+      "all": {
+        "count": 257222,
+        "errors": 0,
+        "p50Ms": 0.3788454774641909,
+        "p95Ms": 17.903645004481618,
+        "p99Ms": 24.777031244874504,
+        "maxMs": 115.172792,
+        "meanMs": 3.7313788566724453
+      },
+      "reads": {
+        "count": 206038,
+        "errors": 0,
+        "p50Ms": 0.27375010642065195,
+        "p95Ms": 1.3306963764882789,
+        "p99Ms": 5.208729188611062,
+        "maxMs": 47.702459,
+        "meanMs": 0.5254971326405808
+      },
+      "writes": {
+        "count": 51184,
+        "errors": 0,
+        "p50Ms": 15.721657608838735,
+        "p95Ms": 24.246110557708217,
+        "p99Ms": 36.591367561190566,
+        "maxMs": 115.172792,
+        "meanMs": 16.636455807596118
+      },
+      "peakHeapAllocBytes": 7226128,
+      "endHeapAllocBytes": 6802632,
+      "endRuntimeSysBytes": 32921880,
+      "peakGoroutines": 160,
+      "gcCount": 1323,
+      "passed": true,
+      "failures": [],
+      "notes": [
+        "Synthetic primary-key read/update workload; cache disabled; not a business capacity guarantee.",
+        "Latency percentiles are histogram upper bounds with less than approximately 2.2% bucket error.",
+        "Heap metrics include the load generator; RuntimeSys is not process RSS. Database is dropped after the run."
+      ],
+      "name": "million-c64-r1",
+      "exit": 0
+    },
+    {
+      "startedAt": "2026-10-17T10:34:36.76395Z",
+      "libraryVersion": "v0.1.0",
+      "goVersion": "go1.26.9",
+      "platform": "darwin/arm64",
+      "cpus": 12,
+      "database": "mongo_plus_loadtest_6ad34f2838577ec2340c89da",
+      "seed": 1000000,
+      "concurrency": 64,
+      "readPercent": 80,
+      "payloadBytes": 256,
+      "warmupSeconds": 3,
+      "durationSeconds": 15.013586708,
+      "qps": 17281.813136746696,
+      "errorRate": 0,
+      "all": {
+        "count": 259462,
+        "errors": 0,
+        "p50Ms": 0.3788454774641909,
+        "p95Ms": 19.105702903658123,
+        "p99Ms": 23.21815501424171,
+        "maxMs": 36.968583,
+        "meanMs": 3.700534212952186
+      },
+      "reads": {
+        "count": 207421,
+        "errors": 0,
+        "p50Ms": 0.27375010642065195,
+        "p95Ms": 1.0950004256826078,
+        "p99Ms": 1.6525356906398472,
+        "maxMs": 18.15275,
+        "meanMs": 0.39192921789500573
+      },
+      "writes": {
+        "count": 52041,
+        "errors": 0,
+        "p50Ms": 16.417714857210754,
+        "p95Ms": 23.21815501424171,
+        "p99Ms": 28.833647186369205,
+        "maxMs": 36.968583,
+        "meanMs": 16.887716563017623
+      },
+      "peakHeapAllocBytes": 7394048,
+      "endHeapAllocBytes": 4914160,
+      "endRuntimeSysBytes": 32590088,
+      "peakGoroutines": 156,
+      "gcCount": 1346,
+      "passed": true,
+      "failures": [],
+      "notes": [
+        "Synthetic primary-key read/update workload; cache disabled; not a business capacity guarantee.",
+        "Latency percentiles are histogram upper bounds with less than approximately 2.2% bucket error.",
+        "Heap metrics include the load generator; RuntimeSys is not process RSS. Database is dropped after the run."
+      ],
+      "name": "million-c64-r2",
+      "exit": 0
+    },
+    {
+      "startedAt": "2026-10-17T10:34:56.607738Z",
+      "libraryVersion": "v0.1.0",
+      "goVersion": "go1.26.9",
+      "platform": "darwin/arm64",
+      "cpus": 12,
+      "database": "mongo_plus_loadtest_6ad34f4b3bcd72855956a268",
+      "seed": 100000,
+      "concurrency": 64,
+      "readPercent": 80,
+      "payloadBytes": 256,
+      "warmupSeconds": 3,
+      "durationSeconds": 120.012687416,
+      "qps": 18273.126343703807,
+      "errorRate": 0,
+      "all": {
+        "count": 2193007,
+        "errors": 0,
+        "p50Ms": 0.3326740941220697,
+        "p95Ms": 17.903645004481618,
+        "p99Ms": 21.75735732572379,
+        "maxMs": 114.32625,
+        "meanMs": 3.5008233538734728
+      },
+      "reads": {
+        "count": 1754606,
+        "errors": 0,
+        "p50Ms": 0.24038710790184534,
+        "p95Ms": 0.940944431515229,
+        "p99Ms": 1.4511346883901068,
+        "maxMs": 114.32625,
+        "meanMs": 0.33926583025590945
+      },
+      "writes": {
+        "count": 438401,
+        "errors": 0,
+        "p50Ms": 16.0659170825886,
+        "p95Ms": 22.233781413405904,
+        "p99Ms": 25.874004135407315,
+        "maxMs": 78.363666,
+        "meanMs": 16.15427943696753
+      },
+      "peakHeapAllocBytes": 7801600,
+      "endHeapAllocBytes": 5571224,
+      "endRuntimeSysBytes": 32590088,
+      "peakGoroutines": 164,
+      "gcCount": 11172,
+      "passed": true,
+      "failures": [],
+      "notes": [
+        "Synthetic primary-key read/update workload; cache disabled; not a business capacity guarantee.",
+        "Latency percentiles are histogram upper bounds with less than approximately 2.2% bucket error.",
+        "Heap metrics include the load generator; RuntimeSys is not process RSS. Database is dropped after the run."
+      ],
+      "name": "sustained-c64-120s",
+      "exit": 0,
+      "clientRSSMiBFirst20sMedian": 32.15625,
+      "clientRSSMiBLast20sMedian": 32.78125,
+      "clientRSSMiBPeak": 32.78125
+    }
+  ],
+  "benchmarks": {
+    "BenchmarkCompare/Read/Driver": {
+      "samples": [
+        {
+          "iterations": 26322,
+          "nsPerOp": 44716.0,
+          "bytesPerOp": 14315,
+          "allocsPerOp": 103
+        },
+        {
+          "iterations": 26761,
+          "nsPerOp": 45403.0,
+          "bytesPerOp": 14314,
+          "allocsPerOp": 103
+        },
+        {
+          "iterations": 26407,
+          "nsPerOp": 45356.0,
+          "bytesPerOp": 14315,
+          "allocsPerOp": 103
+        }
+      ],
+      "medianMsPerOp": 0.045356,
+      "medianBytesPerOp": 14315,
+      "medianAllocsPerOp": 103
+    },
+    "BenchmarkCompare/Read/Repository": {
+      "samples": [
+        {
+          "iterations": 24753,
+          "nsPerOp": 47883.0,
+          "bytesPerOp": 15552,
+          "allocsPerOp": 121
+        },
+        {
+          "iterations": 25410,
+          "nsPerOp": 48136.0,
+          "bytesPerOp": 15550,
+          "allocsPerOp": 121
+        },
+        {
+          "iterations": 24801,
+          "nsPerOp": 48408.0,
+          "bytesPerOp": 15553,
+          "allocsPerOp": 121
+        }
+      ],
+      "medianMsPerOp": 0.048136,
+      "medianBytesPerOp": 15552,
+      "medianAllocsPerOp": 121
+    },
+    "BenchmarkCompare/Update/Driver": {
+      "samples": [
+        {
+          "iterations": 97,
+          "nsPerOp": 11398612.0,
+          "bytesPerOp": 8669,
+          "allocsPerOp": 107
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 10379568.0,
+          "bytesPerOp": 8653,
+          "allocsPerOp": 107
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 10302941.0,
+          "bytesPerOp": 8666,
+          "allocsPerOp": 107
+        }
+      ],
+      "medianMsPerOp": 10.379568,
+      "medianBytesPerOp": 8666,
+      "medianAllocsPerOp": 107
+    },
+    "BenchmarkCompare/Update/Repository": {
+      "samples": [
+        {
+          "iterations": 100,
+          "nsPerOp": 11674159.0,
+          "bytesPerOp": 9706,
+          "allocsPerOp": 134
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 10915553.0,
+          "bytesPerOp": 9706,
+          "allocsPerOp": 134
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 11415573.0,
+          "bytesPerOp": 9777,
+          "allocsPerOp": 134
+        }
+      ],
+      "medianMsPerOp": 11.415573,
+      "medianBytesPerOp": 9706,
+      "medianAllocsPerOp": 134
+    },
+    "BenchmarkRepository/FindById": {
+      "samples": [
+        {
+          "iterations": 23718,
+          "nsPerOp": 48942.0,
+          "bytesPerOp": 15486,
+          "allocsPerOp": 121
+        },
+        {
+          "iterations": 24948,
+          "nsPerOp": 46581.0,
+          "bytesPerOp": 15488,
+          "allocsPerOp": 121
+        },
+        {
+          "iterations": 24338,
+          "nsPerOp": 48978.0,
+          "bytesPerOp": 15487,
+          "allocsPerOp": 121
+        }
+      ],
+      "medianMsPerOp": 0.048942,
+      "medianBytesPerOp": 15487,
+      "medianAllocsPerOp": 121
+    },
+    "BenchmarkRepository/NativeInsertMany100": {
+      "samples": [
+        {
+          "iterations": 100,
+          "nsPerOp": 13346675.0,
+          "bytesPerOp": 616812,
+          "allocsPerOp": 2680
+        },
+        {
+          "iterations": 85,
+          "nsPerOp": 12711668.0,
+          "bytesPerOp": 622516,
+          "allocsPerOp": 2680
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 12462403.0,
+          "bytesPerOp": 629962,
+          "allocsPerOp": 2681
+        }
+      ],
+      "medianMsPerOp": 12.711668,
+      "medianBytesPerOp": 622516,
+      "medianAllocsPerOp": 2680
+    },
+    "BenchmarkRepository/CreateBatch100": {
+      "samples": [
+        {
+          "iterations": 100,
+          "nsPerOp": 12280518.0,
+          "bytesPerOp": 637008,
+          "allocsPerOp": 3196
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 12203908.0,
+          "bytesPerOp": 645068,
+          "allocsPerOp": 3194
+        },
+        {
+          "iterations": 100,
+          "nsPerOp": 12296232.0,
+          "bytesPerOp": 646130,
+          "allocsPerOp": 3194
+        }
+      ],
+      "medianMsPerOp": 12.280518,
+      "medianBytesPerOp": 645068,
+      "medianAllocsPerOp": 3194
+    },
+    "BenchmarkRepository/CreateInt64Block0": {
+      "samples": [
+        {
+          "iterations": 54,
+          "nsPerOp": 22868417.0,
+          "bytesPerOp": 25128,
+          "allocsPerOp": 236
+        },
+        {
+          "iterations": 56,
+          "nsPerOp": 22969617.0,
+          "bytesPerOp": 25099,
+          "allocsPerOp": 236
+        },
+        {
+          "iterations": 55,
+          "nsPerOp": 22209220.0,
+          "bytesPerOp": 25230,
+          "allocsPerOp": 237
+        }
+      ],
+      "medianMsPerOp": 22.868417,
+      "medianBytesPerOp": 25128,
+      "medianAllocsPerOp": 236
+    },
+    "BenchmarkRepository/CreateBatchInt64Block0": {
+      "samples": [
+        {
+          "iterations": 49,
+          "nsPerOp": 23136504.0,
+          "bytesPerOp": 710407,
+          "allocsPerOp": 2933
+        },
+        {
+          "iterations": 50,
+          "nsPerOp": 24041825.0,
+          "bytesPerOp": 719473,
+          "allocsPerOp": 2935
+        },
+        {
+          "iterations": 69,
+          "nsPerOp": 23407841.0,
+          "bytesPerOp": 709285,
+          "allocsPerOp": 2939
+        }
+      ],
+      "medianMsPerOp": 23.407841,
+      "medianBytesPerOp": 710407,
+      "medianAllocsPerOp": 2935
+    },
+    "BenchmarkRepository/CreateInt64Block100": {
+      "samples": [
+        {
+          "iterations": 100,
+          "nsPerOp": 11707073.0,
+          "bytesPerOp": 11893,
+          "allocsPerOp": 107
+        },
+        {
+          "iterations": 102,
+          "nsPerOp": 11784181.0,
+          "bytesPerOp": 11823,
+          "allocsPerOp": 108
+        },
+        {
+          "iterations": 98,
+          "nsPerOp": 11948476.0,
+          "bytesPerOp": 11887,
+          "allocsPerOp": 108
+        }
+      ],
+      "medianMsPerOp": 11.784181,
+      "medianBytesPerOp": 11887,
+      "medianAllocsPerOp": 108
+    },
+    "BenchmarkRepository/CreateBatchInt64Block100": {
+      "samples": [
+        {
+          "iterations": 54,
+          "nsPerOp": 23888282.0,
+          "bytesPerOp": 694643,
+          "allocsPerOp": 2931
+        },
+        {
+          "iterations": 55,
+          "nsPerOp": 23841296.0,
+          "bytesPerOp": 705477,
+          "allocsPerOp": 2932
+        },
+        {
+          "iterations": 45,
+          "nsPerOp": 23426936.0,
+          "bytesPerOp": 723149,
+          "allocsPerOp": 2945
+        }
+      ],
+      "medianMsPerOp": 23.841296,
+      "medianBytesPerOp": 705477,
+      "medianAllocsPerOp": 2932
+    }
+  },
+  "totalMeasuredLoadOperations": 6159885,
+  "totalLoadErrors": 0,
+  "limitations": [
+    "All load and DB processes on one Apple M4 Pro, 48 GiB; not multi-host capacity.",
+    "Closed-loop uniformly random indexed ID workload; excludes HTTP, auth/middleware, joins, hot keys, transactions, encryption, cache, command logging, auto increment allocation.",
+    "Each concurrency level: 3 runs, 2s warm-up and 8s measurement; per-level throughput/latencies are medians of per-run statistics; heap is observed max.",
+    "Pool size = concurrency + 10; primary reads, w=majority, journal=true.",
+    "One-million-document dataset remains small relative to host RAM; disk-bound working sets not measured.",
+    "120 seconds is not a long-term soak test; no open-loop arrival/queue latency or distributed sharding benchmark.",
+    "Driver comparison is a hot single-document serial benchmark with no plugins; 3 samples per entry, no race during timing.",
+    "Write latency includes majority/journal scheduling variability; do not attribute all measured differences to wrapper CPU cost.",
+    "Payload is 256 repeated x characters, highly compressible in WiredTiger; does not represent production document distributions or storage I/O cost."
+  ],
+  "validation": {
+    "concurrencyAndNativeRace": "passed",
+    "generatedRepositoryContractAndCustomOverrideRace": "passed",
+    "measurementInstrumentation": "no race during timed load/benchmarks; race checks performed separately"
+  }
+}
