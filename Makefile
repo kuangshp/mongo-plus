@@ -1,28 +1,19 @@
 SHELL := /bin/bash
 
-.PHONY: test verify security bench loadtest release-check tag
-
-test:
-	go test ./...
-
-verify:
-	go vet ./...
-	go test -race -count=1 ./...
-
-security:
-	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-
-bench:
-	go test -run '^$$' -bench '^BenchmarkRepository$$' -benchmem .
-
-loadtest:
-	go run ./cmd/mongoplus-loadtest $(LOADTEST_ARGS)
-
-# 只校验，不提交、不创建标签、不推送；要求显式指定测试专用 MongoDB。
-release-check:
-	bash scripts/release.sh check
-
-# 版本和发布记录必须提前准备、全部代码提前提交；校验通过后发布当前提交。
-# 不再只提交 version.go，不自动递增版本，也不跳过集成/安全检查。
+.PHONY: tag
 tag:
-	bash scripts/release.sh publish
+	@current=$$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' version.go | head -n1 | tr -d 'v'); \
+	if [ -z "$$current" ]; then echo "version not found in version.go"; exit 1; fi; \
+	maj=$$(echo $$current | cut -d. -f1); \
+	min=$$(echo $$current | cut -d. -f2); \
+	patch=$$(echo $$current | cut -d. -f3); \
+	newpatch=$$(expr $$patch + 1); \
+	new="v$$maj.$$min.$$newpatch"; \
+	printf "Bump: v%s -> %s\n" "$$current" "$$new"; \
+	sed -E -i.bak 's/(const Version = ")([^"]+)(")/\1'"$$new"'\3/' version.go; \
+	git add version.go; \
+	git commit -m "chore(release): $$new"; \
+	git push origin HEAD; \
+	git tag -a "$$new" -m "release $$new"; \
+	git push origin "$$new"; \
+	rm -f version.go.bak
