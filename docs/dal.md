@@ -2,13 +2,22 @@
 
 DAL 对应 gorm-plus 的原始 SQL 文件层。在 MongoDB 中使用 JSON / Extended JSON 描述 BSON 条件、聚合管道、批量模型和变更订阅，不执行 SQL，也不执行 JavaScript。常规查询优先使用生成的 Repository；复杂逻辑仍封装在业务 Repository，业务层只调用业务方法。
 
-完整可编译示例见 [examples/dal](../examples/dal/repository.go)，包含跨集合聚合分页、流式导出、批量状态更新、变更订阅、原生 Collation 查询和事务绑定；示例 JSON 文件也参与真实数据库测试。
+完整可编译示例见 [examples/dal](../examples/dal/repository.go)，包含跨集合聚合分页、流式导出、批量状态更新、变更订阅、原生 Collation 查询和事务绑定；示例 JSON 文件也参与真实数据库测试。实体来自 [schema/user.json](../examples/dal/schema/user.json)，在 `examples/dal` 目录执行 `go run generator.go` 可重新生成；`query/*.json` 负责查询命令，不能替代用于定义模型的 `schema/*.json`。
+
+## 模型 JSON 与查询 JSON 的分工
+
+| 输入 | 用途 | 执行入口 |
+| --- | --- | --- |
+| `schema/*.json` | 集合字段、主键覆盖、索引、校验器及模型生成 | `Generate` / `SyncSchema` / CLI `schema` |
+| `internal/dal/query/**/*.json` | 使用既有集合执行查询、聚合、批量写入或订阅 | DAL 方法 |
+
+先维护模型 JSON，生成 Entity / DAO / Repository 并按环境同步结构，再使用 DAL 查询文件。两类 JSON 目录分别管理；查询文件不能代替建表定义。业务仓储复用生成模型，不能另行手写持久化 Entity；聚合 VO 和读取部分字段的结果结构体仍可按查询定义。具体步骤见 [JSON 模型生成文档](generator.md)。
 
 ## 目录与初始化
 
 ```text
 internal/dal/
-├── entity/                  # 实体，复用生成器或手写 Entity
+├── entity/                  # Entity，只能从 schema JSON 生成
 ├── dao/                     # 生成的类型安全字段
 ├── repository/
 │   ├── user_gen.go          # 生成代码

@@ -1,0 +1,39 @@
+package repository
+
+import (
+	mongoplus "github.com/kuangshp/mongo-plus"
+)
+
+// customerUserRepository 是业务自定义仓储；此文件首次创建后不再覆盖。
+// 自定义方法写在此结构体上；覆盖基础方法时保持相同的方法签名。
+// WithTx 由 _gen.go 提供，返回副本并保留业务依赖；锁等不可复制状态请通过指针持有。
+// 自定义方法优先组合已有仓储方法，自动沿用事务绑定、生命周期与提交后缓存失效。
+// Native 返回原生 Collection，原生调用仍需显式传入事务 txCtx 并自行维护缓存。
+type customerUserRepository struct {
+	*defaultUserRepository
+}
+
+// UserRepository 对外暴露基础能力与业务扩展方法。
+// 新增自定义方法时在此接口声明。
+type UserRepository interface {
+	iDefaultUserRepository
+}
+
+var _ UserRepository = (*customerUserRepository)(nil)
+
+// NewUserRepository 创建仓储。
+// 无参时使用 mongoplus.Use 注册的默认数据库；传一个句柄时固定使用该数据库。
+// 显式 nil 或多个句柄会初始化失败；构造后不受默认数据库切换影响。
+func NewUserRepository(db ...*mongoplus.Database) UserRepository {
+	return &customerUserRepository{
+		defaultUserRepository: newDefaultUserRepository(db...),
+	}
+}
+
+// 自定义查询示例。取消注释后补上 context 与 dao 的导入，再按实际字段调整 Like/WhereIf。
+//
+// func (r *customerUserRepository) FindRecent(ctx context.Context, page, size int64) ([]*model.UserEntity, int64, error) {
+// 	return r.FindPageByWrapper(ctx, page, size, func(w *mongoplus.Wrapper) {
+// 		w.OrderDefault(dao.UserEntity.ID.Desc())
+// 	}, mongoplus.QueryOpt().WithSingleFlight(0).Build())
+// }

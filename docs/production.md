@@ -1,6 +1,19 @@
 # 生产接入与安全配置
 
-本页对应 v0.0.2。先在独立模块和预发布环境验收，再按业务容量灰度。库中的回归测试和本机基线不能替代项目的授权策略、数据迁移审核、备份恢复和真实流量验证。
+本页对应待发布的 v0.1.0 源码。先在独立模块和预发布环境验收，再按业务容量灰度。库中的回归测试和本机基线不能替代项目的授权策略、数据迁移审核、备份恢复和真实流量验证。
+
+## JSON 模型与发布顺序
+
+集合模型统一由 `schema/*.json` 生成。建表、调整字段或索引前先更新 JSON，再生成 Entity / DAO / Repository；不再支持手写模型或程序拼装元数据来同步集合。完整流程与旧版 API 迁移见 [JSON 模型生成文档](generator.md)。
+
+| 阶段 | 必须完成的工作 |
+| --- | --- |
+| 开发 | 修改 JSON 并重新生成数据层，维护保留的 DTO、VO 和业务扩展，编译并验证接口 |
+| 预发布 | 使用对应版本的 JSON 与 generator.go 配置执行 `-action plan`，验证现有数据与新校验器兼容性 |
+| 生产迁移 | 使用审核后的固定 JSON 快照同步结构；必要时执行独立版本迁移与回填 |
+| 启动服务 | 使用已经同步好的集合；运行时连接、Use 和插件注册不执行建表 |
+
+`schema.Plan/Apply` 仅接受 `LoadEntities` 加载后未修改的元数据；不要在 Up 中直接构造 `schema.Entity` 或向加载结果追加字段。历史版本需要改变结构时，新增 JSON 快照并重新加载，同时将 JSON 内容和全局生成规则纳入该迁移的校验和。
 
 ## 租户与严格权限
 
@@ -72,14 +85,14 @@ db.CacheObserver = func(ctx context.Context, event mongoplus.CacheEvent) {
 
 ## 独立版本迁移
 
-不要将生产 `schema apply` 放在每个服务实例的启动流程中。复制 [迁移命令示例](../examples/migrations/main.go) 到业务项目的 `cmd/migrate`，每个版本放一个独立 Go 文件，并使用 `go:embed` 嵌入其源码计算 `migration.Checksum`。这样追加新版本不会改变旧迁移的校验和。
+不要将生产 `-action apply` 放在每个服务实例的启动流程中。复制 [迁移命令示例](../examples/migrations/main.go) 到业务项目的 `cmd/migrate`，每个版本放一个独立 Go 文件，并使用 `go:embed` 嵌入其源码计算 `migration.Checksum`。这样追加新版本不会改变旧迁移的校验和。
 
 版本按字符串升序比较，建议使用固定宽度的时间戳和英文标识。若迁移依赖 JSON schema、脚本或回填配置，校验和必须覆盖全部不可变输入；不要在历史 Up 中读取随主分支变化的 schema 目录。
 
 ```bash
-go run ./cmd/migrate -config mongo-plus.yaml -action plan
-go run ./cmd/migrate -config mongo-plus.yaml -action apply
-go run ./cmd/migrate -config mongo-plus.yaml -action history
+go run ./cmd/migrate -uri "$MONGOPLUS_URI" -database "$MONGOPLUS_DATABASE" -action plan
+go run ./cmd/migrate -uri "$MONGOPLUS_URI" -database "$MONGOPLUS_DATABASE" -action apply
+go run ./cmd/migrate -uri "$MONGOPLUS_URI" -database "$MONGOPLUS_DATABASE" -action history
 ```
 
 | 能力 | 约定 |
@@ -94,9 +107,9 @@ go run ./cmd/migrate -config mongo-plus.yaml -action history
 
 锁和历史集合属于内部保留名称，普通 Repository 和 JSON schema 不允许使用。运行迁移应使用独立部署进程、主库连接与适当的迁移权限；不要嵌入业务事务或 Session。锁不提供人工强制解锁后的并发安全保证。
 
-MongoDB 的 DDL 和回填不会整体原子回滚。推荐采用：先增加兼容字段/索引 → 新旧服务均能读写 → 分批回填 → 确认历史数据达标 → 最后收紧校验器。已有 `schema.Plan/Apply` 可放在迁移的 Up 中；没有 Down 就拒绝自动回滚，涉及数据恢复的 Down 必须明确业务语义和备份来源。
+MongoDB 的 DDL 和回填不会整体原子回滚。推荐采用：先增加兼容字段/索引 → 新旧服务均能读写 → 分批回填 → 确认历史数据达标 → 最后收紧校验器。已有 `schema.Plan/Apply` 可放在迁移的 Up 中，输入必须从该版本固定的 JSON 文件经 `LoadEntities` 加载，不能使用手写或改写后的元数据；没有 Down 就拒绝自动回滚，涉及数据恢复的 Down 必须明确业务语义和备份来源。
 
-原有 `schema.Apply`（包括生成器同步和 CLI `schema apply`）及 `migration.Backfill` 也参与同一个锁。在 Up/Down 内必须沿用回调传入的 Context，才能复用已持有的锁；传事务外的旧 Context 会因锁冲突而报错。原生管理命令不受本包控制，不要从其他发布进程并发执行 DDL。
+原有 `schema.Apply`（包括生成器同步和 generator.go 的 apply）及 `migration.Backfill` 也参与同一个锁。在 Up/Down 内必须沿用回调传入的 Context，才能复用已持有的锁；传事务外的旧 Context 会因锁冲突而报错。原生管理命令不受本包控制，不要从其他发布进程并发执行 DDL。
 
 Apply 会保留内部锁集合，即使操作完成后其中没有锁记录，它也不是业务集合。DAL 原生查询文件、批量和扩展回调的事务/缓存接入见 [DAL 文档](dal.md#原生扩展事务与缓存)。原生迁移/回填不会自动触发业务进程的 Repository 缓存失效；发布流程需要通知共享缓存失效、切换已规划的新 Namespace，或在迁移阶段关闭相关缓存，确认完成后再收紧校验规则。
 
@@ -127,14 +140,14 @@ modified, err := migration.Backfill(ctx, db.Collection("users"),
 
 混合读写工具使用随机专用数据库并自动清理，输出 QPS、错误率、P50/P95/P99、读写分项及堆内存峰值；不会把 URI 写入报告。详见[性能验证](performance.md)。没有目标数据量、SLO 与部署环境时，本机报告只能作为工具回归基线。
 
-当前源码版本准备为 v0.0.2，标签发布前不要假定 `@latest` 已包含这些修复。发布者先提交完整改动，再执行：
+本次生成入口存在不兼容变更，版本号与更新记录已准备为 v0.1.0，但尚未打标签。发布版本以 version.go 和实际标签为准，标签发布前不要假定 `@latest` 已包含这些修复。发布者先提交完整改动，再执行：
 
 ```bash
 MONGOPLUS_TEST_URI='测试专用副本集URI' make release-check
 MONGOPLUS_TEST_URI='测试专用副本集URI' make tag
 ```
 
-`release-check` 不推送；`tag` 要求干净工作区，拒绝覆盖已有标签，执行真实数据库、Gin/goctl、race 和漏洞检查后，将当前分支与版本标签原子推送。发布成功后业务项目固定 `github.com/kuangshp/mongo-plus@v0.0.2`，重新生成 Repository 并验证升级；不要依赖浮动 main 自动获得修复。
+`release-check` 不提交、不创建标签、不推送；`tag` 不自动递增版本或只提交版本文件，要求提前更新 version.go 和对应 CHANGELOG 并提交全部修复；入口首先检查干净工作区，拒绝覆盖已有标签，执行真实数据库、Gin/goctl、race 和漏洞检查后，将当前分支与版本标签原子推送。发布成功后业务项目固定 `github.com/kuangshp/mongo-plus@v0.1.0`，重新生成 Repository 并验证升级；不要依赖浮动 main 自动获得修复。
 
 ## 依赖扫描边界
 

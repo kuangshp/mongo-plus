@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	manual "github.com/kuangshp/mongo-plus/examples/manual/model"
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"github.com/kuangshp/mongo-plus/schema"
 )
 
@@ -26,11 +26,8 @@ func fixture(t *testing.T) (schema.Config, string) {
 	if err = os.Mkdir(filepath.Join(dir, "schema"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(dir, "mongo-plus.yaml"), []byte("module: example.com/fixture\nid:\n  type: int64\n  generation: increment\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := schema.LoadConfig(filepath.Join(dir, "mongo-plus.yaml"))
-	if err != nil {
+	c := schema.Config{ProjectDir: dir, Package: "example.com/fixture", ID: settings.IDConfig{Type: settings.IDTypeInt64}}
+	if err := c.Normalize(); err != nil {
 		t.Fatal(err)
 	}
 	return c, dir
@@ -112,15 +109,26 @@ func TestGeneratedCodeAndPreservedExtensions(t *testing.T) {
 	compileFixture(t, dir)
 }
 
-func TestHandwrittenEntityGeneration(t *testing.T) {
-	c, dir := fixture(t)
-	if _, err := GenerateModels(c, schema.Model{Value: manual.DocumentEntity{}, Collection: "documents"}); err != nil {
+// 即使输出目录里已有手写 Entity，也不能代替 schema/*.json。
+func TestGenerationRequiresJSONDefinitions(t *testing.T) {
+	c, _ := fixture(t)
+	if err := os.MkdirAll(c.ModelPkgPath, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(c.Output, "model", "document_entity.go")); !os.IsNotExist(err) {
-		t.Fatal("生成器不应复制或覆盖手写 Entity")
+	path := filepath.Join(c.ModelPkgPath, "user_entity.go")
+	original := []byte("package model\ntype UserEntity struct { ID int64 }\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
 	}
-	compileFixture(t, dir)
+	if files, err := Generate(c); err == nil || !strings.Contains(err.Error(), "没有 JSON 实体定义") || len(files) != 0 {
+		t.Fatalf("无 JSON 仍生成文件: %v %v", files, err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(original) {
+		t.Fatal("修改了原有文件", err)
+	}
+	if _, err := os.Stat(c.RepoPath); !os.IsNotExist(err) {
+		t.Fatal("无 JSON 时生成了仓储")
+	}
 }
 
 func TestRejectOverwritingHandwrittenFile(t *testing.T) {

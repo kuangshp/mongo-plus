@@ -5,7 +5,7 @@ import (
 	"unicode"
 )
 
-// SnakeName 统一文件名和手写 Entity 名称，例如 sysUser/sys_user 均为 sys_user。
+// SnakeName 统一 JSON 文件名与集合名称，例如 sysUser/sys_user 均为 sys_user。
 // 连续大写缩写按单词处理，例如 HTTPUser 为 http_user，UserID 为 user_id。
 func SnakeName(name string) string {
 	runes := []rune(name)

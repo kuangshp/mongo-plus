@@ -3,8 +3,9 @@ package schema
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/kuangshp/mongo-plus/internal/settings"
 )
 
 func testConfig(t *testing.T, definitions map[string]string) Config {
@@ -19,12 +20,8 @@ func testConfig(t *testing.T, definitions map[string]string) Config {
 			t.Fatal(err)
 		}
 	}
-	path := filepath.Join(dir, "mongo-plus.yaml")
-	if err := os.WriteFile(path, []byte("module: example.com/shop\nid:\n  type: int64\n  generation: increment\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := LoadConfig(path)
-	if err != nil {
+	c := Config{ProjectDir: dir, Module: "example.com/shop", ID: settings.IDConfig{Type: settings.IDTypeInt64}}
+	if err := c.Normalize(); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -97,17 +94,13 @@ func TestValidationNestedAndOrderedIndexes(t *testing.T) {
 	}
 }
 
-func TestUnknownConfigAndPathEscape(t *testing.T) {
+func TestProjectPathEscape(t *testing.T) {
 	c := testConfig(t, map[string]string{"user": `{"fields":[]}`})
 	c.Output = filepath.Join(c.BaseDir(), "..", "outside")
 	if err := c.Normalize(); err == nil {
 		t.Fatal("允许逃离项目目录")
 	}
-	path := filepath.Join(c.BaseDir(), "bad.yaml")
-	_ = os.WriteFile(path, []byte("module: example.com/shop\nsoftDelet: true\n"), 0600)
-	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "softDelet") {
-		t.Fatalf("未知配置被忽略 %v", err)
-	}
+
 }
 
 func TestIndependentOutputConfigValidation(t *testing.T) {
@@ -136,43 +129,40 @@ func TestIndependentOutputConfigValidation(t *testing.T) {
 }
 
 func TestOptionalMongoDBConfig(t *testing.T) {
-	t.Setenv("MONGO_PLUS_TEST_MISSING_URI", "")
-	t.Setenv("MONGO_PLUS_TEST_MISSING_DB", "")
-	t.Setenv("MONGO_PLUS_TEST_CONFIG_URI", "mongodb://127.0.0.1:27017")
-	t.Setenv("MONGO_PLUS_TEST_CONFIG_DB", "shop")
 	for _, item := range []struct {
-		name, yaml          string
+		name                string
+		source              settings.Config
 		configured, invalid bool
 	}{
-		{"omitted", "", false, false},
-		{"null", "mongodb: null\n", false, false},
-		{"complete", "mongodb:\n  uri: mongodb://127.0.0.1:27017\n  database: shop\n", true, false},
-		{"env", "mongodb:\n  uri: ${MONGO_PLUS_TEST_CONFIG_URI}\n  database: ${MONGO_PLUS_TEST_CONFIG_DB}\n", true, false},
-		{"empty", "mongodb: {}\n", false, true},
-		{"uri only", "mongodb:\n  uri: mongodb://127.0.0.1:27017\n", true, true},
-		{"database only", "mongodb:\n  database: shop\n", true, true},
-		{"options only", "mongodb:\n  maxPoolSize: 100\n", true, true},
-		{"missing env", "mongodb:\n  uri: ${MONGO_PLUS_TEST_MISSING_URI}\n  database: ${MONGO_PLUS_TEST_MISSING_DB}\n", false, true},
+		{"omitted", settings.Config{}, false, false},
+		{"complete", settings.Config{URI: "mongodb://127.0.0.1:27017", Database: "shop"}, true, false},
+		{"uri only", settings.Config{URI: "mongodb://127.0.0.1:27017"}, true, true},
+		{"database only", settings.Config{Database: "shop"}, true, true},
+		{"options only", settings.Config{MaxPoolSize: 100}, true, true},
 	} {
 		t.Run(item.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "generator.yml")
-			if err := os.WriteFile(path, []byte("package: example.com/shop\n"+item.yaml), 0600); err != nil {
-				t.Fatal(err)
+			c := Config{ProjectDir: t.TempDir(), Package: "example.com/shop", MongoDB: item.source}
+			if c.HasMongoDB() != item.configured {
+				t.Fatal("数据源判断错误")
 			}
-			c, err := LoadConfig(path)
-			if item.invalid {
-				if err == nil || !strings.Contains(err.Error(), "uri、database") {
-					t.Fatalf("不完整数据源未报错: %v", err)
-				}
-				return
-			}
-			if err != nil || c.HasMongoDB() != item.configured {
-				t.Fatalf("可选数据源判断不正确 %+v %v", c, err)
-			}
-			if item.configured && (c.MongoDB.URI != "mongodb://127.0.0.1:27017" || c.MongoDB.Database != "shop") {
-				t.Fatal("数据源读取或环境变量展开失败")
+			if err := c.Normalize(); (err != nil) != item.invalid {
+				t.Fatalf("数据源校验错误: %v", err)
 			}
 		})
+	}
+}
+
+func TestProjectDirAndStablePaths(t *testing.T) {
+	c := Config{ProjectDir: t.TempDir(), Package: "example.com/shop", ModelPkgPath: "internal/dal/entity"}
+	if err := c.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(c.ProjectDir, "internal/dal/entity")
+	if c.ModelPkgPath != want || c.ImportPath("model") != "example.com/shop/internal/dal/entity" {
+		t.Fatalf("项目路径错误: %+v", c)
+	}
+	if err := c.Normalize(); err != nil || c.ModelPkgPath != want {
+		t.Fatalf("重复归一化改变路径: %v", err)
 	}
 }
 

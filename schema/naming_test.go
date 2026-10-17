@@ -1,8 +1,6 @@
 package schema
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,47 +47,20 @@ func TestCollectionNamingCollision(t *testing.T) {
 	}
 }
 
-type SysUserEntity struct {
-	ID int64 `bson:"_id"`
-}
-
-func TestHandwrittenModelCollectionNaming(t *testing.T) {
-	c := testConfig(t, nil)
-	c.SoftDelete, c.Timestamps = Bool(false), Bool(false)
-	for _, suffix := range []bool{false, true} {
-		c.Pluralize = suffix
-		entities, err := FromModels(c, Model{Value: SysUserEntity{}})
-		want := "sys_user"
-		if suffix {
-			want += "s"
-		}
-		if err != nil || len(entities) != 1 || entities[0].Collection != want {
-			t.Fatalf("手写实体命名错误 %+v %v", entities, err)
-		}
-	}
-}
-
-func TestPluralizeYAMLBool(t *testing.T) {
-	for _, item := range []struct {
-		value         string
-		want, invalid bool
-	}{
-		{"", false, false},
-		{"pluralize: false\n", false, false},
-		{"pluralize: true\n", true, false},
-		{"pluralize: s\n", false, true},
-		{"pluralize: \"\"\n", false, true},
-	} {
-		path := filepath.Join(t.TempDir(), "generator.yml")
-		if err := os.WriteFile(path, []byte("package: example.com/shop\n"+item.value), 0600); err != nil {
+func TestPluralizeGoConfig(t *testing.T) {
+	for _, value := range []bool{false, true} {
+		c := testConfig(t, map[string]string{"user": `{"fields":[]}`})
+		c.Pluralize = value
+		entities, err := LoadEntities(c)
+		if err != nil {
 			t.Fatal(err)
 		}
-		c, err := LoadConfig(path)
-		if (err != nil) != item.invalid {
-			t.Fatalf("配置 %q 结果不符: %v", item.value, err)
+		want := "user"
+		if value {
+			want = "users"
 		}
-		if !item.invalid && c.Pluralize != item.want {
-			t.Fatalf("配置 %q 开关值错误: %v", item.value, c.Pluralize)
+		if entities[0].Collection != want {
+			t.Fatal("集合复数配置错误")
 		}
 	}
 }

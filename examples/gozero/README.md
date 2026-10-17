@@ -1,15 +1,31 @@
 # go-zero 模板示例
 
-在此目录运行 `make gen`，会安装工具，从 mongo-plus.yaml 读取生成配置，根据 schema/*.json 生成数据层，再根据 shop.api 生成 HTTP 服务。无需在 generator.go 内维护数据源或输出路径。
+先写 schema/*.json，再修改根目录 generator.go 的生成参数。在此目录运行 `make gen` 会安装工具、生成数据层，再根据 shop.api 生成 HTTP 服务。无需专用 mongo-plus.yaml，不能通过手写 Entity 代替 JSON。
 
-默认 YAML 注释了 mongodb 段，因此生成时不连接数据库。需要在生成时创建集合、索引、校验器，填写该段的 uri、database 后仍执行 `make gen` 或 `go run generator.go`。不配置时，集合由服务中的首次业务写入创建；唯一索引和校验器需要显式同步。
+首次运行可使用 `-mod=mod` 补齐 go.mod / go.sum；Makefile 已包含该参数。
 
-pluralize: true 表示示例使用 users 等复数名称；false 或省略则使用 user、sys_user。数据层输出在 internal/dal/entity、dao、repository、dto、vo，DTO/VO 首次创建后保留业务修改。
+生成参数包括输出目录、主键、时间、软删除、Pluralize，统一写在 generator.go；字段与索引只写 JSON。默认只生成代码，不连接数据库：
 
-生成后执行 `go mod tidy`，再执行 `make run` 或 `make build`。服务运行配置默认关闭 MongoDB 和 Swagger。`/demo/check` 展示请求契约，Logic 的业务实现、Repository 注入参考主文档。
+```bash
+go run -mod=mod generator.go -action check
+make gen
+go mod tidy
+```
 
-开启 Swagger：修改生成的 etc/shop-api.yaml 中 SwaggerConfig.Enabled: true；后续 run/build 会先更新并内嵌文档。
+服务生成后，根据环境填写 etc/shop-api.yaml 的 MongoConfig。启用且 URI/Database 完整、TimeoutSeconds 在 1～3600 之间时，可以复用该运行连接：
 
-开启服务的 MongoDB：配置 etc/shop-api.yaml 的 MongoConfig 并启用，与生成器 YAML 使用同一数据源。需要单独预览或同步集合时，可执行 `make schema-plan`、`make schema-apply`。
+```bash
+go run generator.go -action plan -config etc/shop-api.yaml
+go run generator.go -action apply -config etc/shop-api.yaml
+# 或通过 Makefile 执行相同操作。
+make schema-plan
+make schema-apply
+```
 
-完整说明见 [go-zero 使用文档](../../docs/gozero.md)。
+默认 generate 在提供连接时先同步数据库再生成，未提供连接时只生成。check 不连接/写库、不生成；plan 只预览；apply 只同步、不生成文件。HTTP 服务启动不会自动迁移集合。首次写入不能替代 JSON 声明的索引和校验器同步。
+
+生成 Entity、DAO 和仓储基础文件会更新；业务仓储扩展和 DTO/VO 首次生成后保留业务修改。运行 `make run` / `make build` 使用服务自身配置，Swagger 与业务运行 YAML 继续保留。
+
+本例 generator.go 使用 go-zero 的 `conf.Load` 读取已有 MongoConfig，与服务保持相同的键名大小写兼容和默认值：省略 MaxPoolSize 时为 100，省略 TimeoutSeconds 时为 10；显式无效超时仍报错。不导入尚未生成的 internal/config，首次生成不会依赖生成结果。已有服务可改为调用自己的配置加载器。
+
+完整入口与旧 API 迁移见 [JSON 模型生成文档](../../docs/generator.md)，HTTP 模板见 [go-zero 文档](../../docs/gozero.md)。

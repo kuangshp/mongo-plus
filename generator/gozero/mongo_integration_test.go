@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kuangshp/mongo-plus/generator"
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"github.com/kuangshp/mongo-plus/schema"
 )
 
@@ -17,7 +18,6 @@ func TestGoctlMongoServiceContext(t *testing.T) {
 	dir := newServiceFixture(t, "syntax = \"v1\"\nservice sample-api {\n @handler Ping\n get /ping\n}\n")
 	for name, content := range map[string]string{
 		"schema/user.json": `{"fields":[{"name":"name","type":"string"}]}`,
-		"mongo-plus.yaml":  "package: servicefixture\nschemaDir: schema\nmodel_pkg_path: internal/dal/entity\nout_path: internal/dal/dao\nrepo_path: internal/dal/repository\nid:\n  type: int64\n  generation: manual\nsoftDelete: false\ntimestamps: false\n",
 	} {
 		path := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -27,10 +27,7 @@ func TestGoctlMongoServiceContext(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg, err := schema.LoadConfig(filepath.Join(dir, "mongo-plus.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := schema.Config{ProjectDir: dir, Package: "servicefixture", ModelPkgPath: "internal/dal/entity", OutPath: "internal/dal/dao", RepoPath: "internal/dal/repository", ID: settings.IDConfig{Type: settings.IDTypeInt64, Generation: settings.IDGenerationManual}, SoftDelete: schema.Bool(false), Timestamps: schema.Bool(false)}
 	if _, err := generator.Generate(cfg); err != nil {
 		t.Fatal(err)
 	}

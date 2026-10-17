@@ -1,8 +1,6 @@
 package schema
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/kuangshp/mongo-plus/internal/settings"
@@ -24,16 +22,11 @@ func TestMongoLogConfig(t *testing.T) {
 	if !(Config{MongoDB: settings.Config{Log: settings.LogConfig{Replayable: true}}}).HasMongoDB() {
 		t.Fatal("replayable mode must count as supplied configuration")
 	}
-	file := filepath.Join(t.TempDir(), "mongo-plus.yaml")
-	err := os.WriteFile(file, []byte("module: example.com/shop\nmongodb:\n  uri: mongodb://localhost:27017\n  database: shop\n  log:\n    level: info\n    format: shell\n    replayable: true\n    slowThresholdMs: 500\n    colorful: true\n"), 0600)
-	if err != nil {
+	c = Config{ProjectDir: t.TempDir(), Package: "example.com/shop", MongoDB: settings.Config{URI: "mongodb://localhost:27017", Database: "shop", Log: settings.LogConfig{Level: settings.LogInfo, Format: "shell", Replayable: true, SlowThresholdMS: 500, Colorful: true}}}
+	if err := c.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	c, err = LoadConfig(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.MongoDB.Log.Level != settings.LogInfo || c.MongoDB.Log.Format != "shell" || !c.MongoDB.Log.Replayable || c.MongoDB.Log.SlowThresholdMS != 500 || !c.MongoDB.Log.Colorful {
-		t.Fatalf("log config not loaded: %+v", c.MongoDB.Log)
+	if c.MongoDB.Log.Level != settings.LogInfo || !c.MongoDB.Log.Replayable {
+		t.Fatal("Go 配置丢失日志参数")
 	}
 }

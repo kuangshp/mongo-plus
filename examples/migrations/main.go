@@ -1,4 +1,4 @@
-// 独立发布命令示例：go run ./examples/migrations -config /业务项目/mongo-plus.yaml -action plan。
+// 独立发布命令示例：go run ./examples/migrations -uri "$MONGOPLUS_URI" -database "$MONGOPLUS_DATABASE" -action plan。
 // 将本目录复制为业务项目的 cmd/migrate，并将固定集合名、迁移内容替换为业务定义。
 package main
 
@@ -15,7 +15,8 @@ import (
 )
 
 func main() {
-	file := flag.String("config", "mongo-plus.yaml", "业务项目配置；必须提供 MongoDB 数据源")
+	uri := flag.String("uri", os.Getenv("MONGOPLUS_URI"), "数据库连接地址；默认读取 MONGOPLUS_URI")
+	database := flag.String("database", os.Getenv("MONGOPLUS_DATABASE"), "数据库名；默认读取 MONGOPLUS_DATABASE")
 	action := flag.String("action", "plan", "plan、apply、history、rollback、lock 或 unlock")
 	version := flag.String("version", "", "显式回滚的最新版本")
 	owner := flag.String("owner", "", "已确认原进程退出后，人工释放的锁 Owner")
@@ -26,14 +27,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "timeout 必须大于零")
 		os.Exit(2)
 	}
-	cfg, err := mp.LoadGeneratorConfig(*file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	db, err := mp.Connect(ctx, cfg.MongoDB)
+	db, err := mp.Connect(ctx, mp.Config{URI: *uri, Database: *database})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

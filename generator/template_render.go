@@ -116,7 +116,7 @@ func entityField(f schema.Field, nested string, top bool) taggedField {
 }
 
 func nestedTypes(f schema.Field, name string) []nestedType {
-	if f.NativeGoType != "" || strings.TrimPrefix(f.Type, "[]") != "object" {
+	if strings.TrimPrefix(f.Type, "[]") != "object" {
 		return nil
 	}
 	current := nestedType{Name: name, Comment: comment(f.Comment)}
@@ -139,12 +139,12 @@ func daoData(e schema.Entity) (daoView, error) {
 		}
 		names[name] = true
 		typ := goType(f, nested)
-		if f.NativeGoType == "" && strings.Contains(typ, root) {
+		if strings.Contains(typ, root) {
 			typ = strings.ReplaceAll(typ, root, "model."+root)
 		}
 		var ft, ctor string
 		switch {
-		case f.Type == "string" && !f.Nullable && f.NativeGoType == "":
+		case f.Type == "string" && !f.Nullable:
 			ft, ctor = "field.String", "field.NewString"
 		case (f.Type == "int32" || f.Type == "int64" || f.Type == "float64") && !f.Nullable:
 			ft, ctor = "field.Numeric["+typ+"]", "field.NewNumeric["+typ+"]"
@@ -255,7 +255,7 @@ func voData(e schema.Entity) voView {
 			continue
 		}
 		typ := goType(f, e.Entity+f.GoName)
-		if f.NativeGoType == "" && strings.TrimPrefix(f.Type, "[]") == "object" {
+		if strings.TrimPrefix(f.Type, "[]") == "object" {
 			typ = strings.ReplaceAll(typ, e.Entity, "model."+e.Entity)
 		}
 		jsonName := f.Name

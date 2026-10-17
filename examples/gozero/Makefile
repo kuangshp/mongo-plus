@@ -8,9 +8,9 @@ install-tools:
 validate: install-tools
 	goctl api validate --api shop.api
 
-# 读取 YAML；配置 mongodb 时先同步数据库，再生成数据层和 HTTP 层。
+# 生成规则只在 generator.go；默认只生成文件，再生成 HTTP 层。
 gen: validate
-	go run generator.go
+	go run -mod=mod generator.go
 	mongoplus goctl api go --api shop.api --dir . --style=goZero
 
 swagger:
@@ -29,7 +29,7 @@ build: swagger
 
 # 配置 mongodb 后可单独预览或同步；启动服务不自动同步结构。
 schema-plan:
-	mongoplus schema plan --config mongo-plus.yaml
+	go run -mod=mod generator.go -action plan -config etc/shop-api.yaml
 
 schema-apply:
-	mongoplus schema apply --config mongo-plus.yaml
+	go run -mod=mod generator.go -action apply -config etc/shop-api.yaml

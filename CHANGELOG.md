@@ -1,5 +1,21 @@
 # 更新记录
 
+## v0.1.0
+
+待发布：包含生成入口的不兼容变更；业务需先迁移生成配置与旧 API，本文不表示标签已经发布。
+
+- 生成流程先从 JSON 准备不可改写的代码/结构快照，统一完成渲染、DAO 路径、跨文件声明和覆盖预检，再访问数据库；check、generate、plan、apply、SyncSchema 共用该流程。同步与文件输出使用同一快照，避免生成失败后才发现名称冲突，或 JSON 变化导致结构与代码不一致。
+- 检查同包内跨实体与嵌套类型、DTO/VO、保留业务扩展的声明冲突；冲突在建表、校验器更新和文件写入前报错，补充原有写入不受失败生成影响的真实数据库回归。
+- 真实 mongosh 日志重放测试支持 MONGOPLUS_MONGOSH_PATH，可在没有 Docker 的本机环境执行同一套语句与 BSON 类型断言；CI 继续复用容器。
+- make tag 改为发布完整已提交修复；干净工作区、版本/更新记录、标签、真实数据库、框架集成、竞态和漏洞检查均在创建标签之前完成，不自动提交版本号或递增版本。
+
+- 修复 go-zero 示例生成器复用业务配置时丢失默认值和键名大小写兼容的问题，改用 `conf.Load`；增加省略连接池/超时、小写配置键及显式无效超时的回归检查。
+
+- **不兼容变更：移除完整生成配置 YAML。** 删除 LoadGeneratorConfig / schema.LoadConfig、专用生成 YAML 与 mongoplus generate/check/schema 入口。生成规则只在 generator.go 配置，通过 RunGenerator(ctx, cfg, action) 执行 generate/check/plan/apply；业务与 Swagger/go-zero 的运行 YAML 继续保留。示例、迁移入口、框架回归和文档同步调整。
+
+- **不兼容变更：数据模型统一由 JSON 定义生成。** 移除 `GeneratorModel`、`GenerateModels`、`SyncModels`、`schema.Model`、`schema.FromModels` 和 `generator.GenerateEntities`，不再提供手写 Entity 建表或生成数据层的入口。旧项目先将定义迁移至 `schema/*.json`，再使用 `Generate` / `SyncSchema`。
+- `schema.Plan` / `schema.Apply` 仅接受 `LoadEntities` 从 JSON 文件加载后未修改的元数据；在数据库访问和迁移锁写入前拒绝伪造来源、空定义及加载后篡改。DAL 示例改为复用 JSON 生成模型，更新迁移说明与回归测试。
+
 ## v0.0.2
 
 - 增加显式 Replayable 日志模式，输出可复制到 mongosh 执行的真实语句与 BSON 类型；超长语句整条省略，依赖原 Session/游标的命令明确标注；增加真实 mongosh 执行及字段类型回归，并纳入 CI。

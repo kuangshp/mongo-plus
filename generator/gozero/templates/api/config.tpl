@@ -23,7 +23,7 @@ type Config struct {
 	MongoConfig MongoConfig `json:",optional"` // MongoDB 连接；关闭时可先独立开发和验证 HTTP 接口。
 }
 
-// MongoConfig 是服务的运行时配置；schema 生成与同步使用独立的 mongo-plus.yaml。
+// MongoConfig 是服务运行时连接；generator.go 可复用此连接，生成规则只在 Go 中维护。
 type MongoConfig struct {
 	Enabled        bool                `json:",default=false"` // 是否初始化 MongoDB；省略时关闭。
 	URI            string              `json:",optional"`      // 开启时必填，认证和副本集参数也放在 URI 中。

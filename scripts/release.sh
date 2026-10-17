@@ -7,6 +7,11 @@ if [[ "$mode" != check && "$mode" != publish ]]; then
   echo 'Usage: bash scripts/release.sh check|publish' >&2
   exit 2
 fi
+# 发布只能使用已提交的完整工作树；尽早拒绝，避免联网或测试前误认为可发布。
+if [[ "$mode" == publish ]] && [[ -n "$(git status --porcelain)" ]]; then
+  echo '请先提交全部修复；发布必须使用干净的工作区，不会自动提交版本文件。' >&2
+  exit 1
+fi
 version="$(sed -nE 's/^const Version = "(v[0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' version.go)"
 if [[ -z "$version" ]] || ! grep -Fxq "## $version" CHANGELOG.md; then
   echo 'version.go 必须包含有效版本，CHANGELOG.md 必须包含对应发布记录。' >&2

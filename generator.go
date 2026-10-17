@@ -1,25 +1,53 @@
 //go:build ignore
 
-// 在项目根目录执行 go run generator.go；也可通过 -config 指定 YAML 文件。
+// 从本目录执行 go run generator.go；模型字段只在 schema JSON 中维护。
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"log"
+	"os"
+	"time"
 
 	mongoplus "github.com/kuangshp/mongo-plus"
 )
 
 func main() {
-	configFile := flag.String("config", "examples/mongo-plus.yaml", "生成器 YAML 配置文件")
+	action := flag.String("action", "generate", "generate、check、plan 或 apply")
+	timeout := flag.Duration("timeout", 60*time.Second, "本次生成或同步的总超时")
 	flag.Parse()
-	cfg, err := mongoplus.LoadGeneratorConfig(*configFile)
+	if flag.NArg() != 0 || *timeout <= 0 {
+		log.Fatal("不接受位置参数，timeout 必须大于零")
+	}
+	cfg := &mongoplus.GeneratorConfig{
+		Package:      "github.com/kuangshp/mongo-plus",
+		SchemaDir:    "examples/schema",
+		ModelPkgPath: "examples/query/model",
+		OutPath:      "examples/query/dao",
+		RepoPath:     "examples/query/repository",
+		DtoPath:      "examples/query/dto",
+		VoPath:       "examples/query/vo",
+		Pluralize:    true,
+		ID:           mongoplus.IDConfig{Type: mongoplus.IDTypeInt64},
+		SoftDelete:   mongoplus.Bool(true),
+		Timestamps:   mongoplus.Bool(true),
+		MongoDB: mongoplus.Config{
+			URI:      os.Getenv("MONGOPLUS_URI"),
+			Database: os.Getenv("MONGOPLUS_DATABASE"),
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	changes, err := mongoplus.RunGenerator(ctx, cfg, *action)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// 配置了 mongodb 就先同步集合、索引、校验器；省略则只生成文件。
-	if err := mongoplus.Generate(cfg); err != nil {
-		log.Fatal(err)
+	if changes != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(changes); err != nil {
+			log.Fatal(err)
+		}
 	}
-	log.Print("Entity、DAO、Repository、DTO、VO 生成完成")
+	log.Printf("%s 完成", *action)
 }

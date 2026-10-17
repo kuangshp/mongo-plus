@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kuangshp/mongo-plus/generator"
+	"github.com/kuangshp/mongo-plus/internal/settings"
 	"github.com/kuangshp/mongo-plus/schema"
 )
 
@@ -57,11 +58,6 @@ func TestGinIntegration(t *testing.T) {
 		}
 	}
 	// 使用真实生成器输出 DTO，再编译 README 的 Gin 控制器，避免手写替代标签。
-	configFile := filepath.Join(dir, "mongo-plus.yml")
-	config := "package: flycos\nmodel_pkg_path: internal/dal/entity\nout_path: internal/dal/dao\nrepo_path: internal/dal/repository\ndto_path: internal/dal/dto\nvo_path: internal/dal/vo\nid:\n  type: int64\n"
-	if err := os.WriteFile(configFile, []byte(config), 0600); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Mkdir(filepath.Join(dir, "schema"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +69,7 @@ func TestGinIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg, err := schema.LoadConfig(configFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := schema.Config{ProjectDir: dir, Package: "flycos", ModelPkgPath: "internal/dal/entity", OutPath: "internal/dal/dao", RepoPath: "internal/dal/repository", DtoPath: "internal/dal/dto", VoPath: "internal/dal/vo", ID: settings.IDConfig{Type: settings.IDTypeInt64}}
 	if _, err := generator.Generate(cfg); err != nil {
 		t.Fatal(err)
 	}

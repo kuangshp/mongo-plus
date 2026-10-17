@@ -3,11 +3,11 @@ Host: {{.host}}
 Port: {{.port}}
 
 # MongoDB 运行时连接；URI 可通过部署配置或 go-zero 的环境变量加载方式注入。
-# 使用 JSON 生成 Entity/DAO/Repository 的配置放在 mongo-plus.yaml，避免与 HTTP 配置混淆。
+# 生成规则在 generator.go，模型字段在 schema/*.json；生成入口可复用下方运行时连接。
 MongoConfig:
   Enabled: true # 使用 MongoDB 业务接口时开启；关闭时 ServiceContext.MongoDB 为 nil。
   URI: "mongodb://127.0.0.1:27017" # 事务需要副本集或支持事务的分片集群。
-  Database: "" # 开启前必填，与 mongo-plus.yaml 中的目标数据库保持一致。
+  Database: "" # 开启前必填，生成器同步结构时应复用同一环境的数据源。
   MaxPoolSize: 100 # 所有 Repository 共用一个 Client 的连接池。
   TimeoutSeconds: 10 # 初始化连接及数据库操作超时，范围 1～3600 秒。
   Log:

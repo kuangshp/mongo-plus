@@ -2,7 +2,7 @@
 
 mongo-plus 的模板参照 gorm-plus 实现，保留 Handler → Logic → Repository 的调用方式。模板包含中文参数校验、数字/字符串入参兼容、统一响应、CORS、公开静态文件、文件日志与 Swagger。HTTP 功能位于独立子包，数据层不依赖 go-zero、Gin、GORM、gorm-plus 或 go-utils。
 
-本次实测 goctl/go-zero 1.10.2。goctl 负责生成 HTTP 代码；mongoplus 为它提供内嵌模板。`go run generator.go` 通过公共包生成数据层，CLI 的 `mongoplus generate` 保留兼容，启动服务不会自动同步集合或索引。
+本次实测 goctl/go-zero 1.10.2。goctl 负责生成 HTTP 代码；mongoplus 为它提供内嵌模板。`go run generator.go` 通过公共包生成数据层，不再提供完整生成 YAML 和对应生成 CLI 命令，启动服务不会自动同步集合或索引。
 
 ## 1. 安装与准备
 
@@ -20,9 +20,11 @@ go install github.com/zeromicro/go-zero/tools/goctl@v1.10.2
 
 将 Go 的安装目录加入 PATH。业务项目的 go.mod 同时需要 mongo-plus 和 go-zero；CLI 安装不等于添加运行时依赖。工具版本应与业务项目的 mongo-plus 依赖版本保持一致。
 
-业务项目按下文创建 generator.go、生成配置和 .api 文件即可使用内嵌模板；可参考 [go-zero 示例模块](../examples/gozero/README.md) 的目录结构。
+业务项目按下文创建 generator.go、schema/*.json 和 .api 文件即可使用内嵌模板；生成规则写在 generator.go。可参考 [go-zero 示例模块](../examples/gozero/README.md) 的目录结构。
 
 ## 2. 公共包 generator.go 与 .api 分工
+
+数据模型必须先定义在 `schema/*.json` 中，再由生成器创建 Entity / DAO / Repository。手写 Entity、反射模型或直接拼装 schema 元数据的入口已移除；完整步骤与旧项目迁移见 [JSON 模型生成与集合同步](generator.md)。`.api` 负责 HTTP 请求与响应协议，不能替代集合 JSON。
 
 服务目录可以按下面组织：
 
@@ -30,24 +32,26 @@ go install github.com/zeromicro/go-zero/tools/goctl@v1.10.2
 shop/
 ├── shop.api                 # 请求、响应和路由协议。
 ├── generator.go             # 公共包生成入口，配置与 gorm-plus 使用方式一致。
-├── mongo-plus.yml           # 生成配置，mongodb 数据源可选。
-├── schema/user.json         # 数据模型。
+├── schema/user.json         # 模型定义的唯一来源，先写此文件。
 ├── etc/shop-api.yaml        # 生成后的 HTTP 服务运行配置。
 ├── internal/dal/            # Entity、DAO、Repository、DTO、VO。
 └── Makefile
 ```
 
-README 提供 [两种 generator.go 用法](../README.md#1-全局配置一次实体按需覆盖)：直接在 Go 中配置输出目录、ID、逻辑删除等参数，并按需读取业务 YAML 数据源；或通过 mongo-plus.yml 加载完整生成配置。任选一种，Package 都应与 go.mod 的 module 一致。
+README 提供 [完整 generator.go 示例](../README.md#1-全局配置一次实体按需覆盖)：生成目录、主键和逻辑删除规则在 Go 中配置；数据源复用业务已有配置。Package 应与 go.mod 的 module 一致，不再单独维护生成 YAML。
 
-`pluralize: false` 表示 user、sys_user；`pluralize: true` 表示 users、sys_users。不填写 mongodb 时只生成代码；填写完整数据源后，执行同一条命令会先创建/同步集合、索引、校验器，再生成文件。数据源不完整或连接失败会停止。生成器与服务运行时 MongoConfig 应读取同一个项目的数据源，但生成器不会把连接串写入 Entity、Repository。
+`Pluralize: false` 表示 user、sys_user；`Pluralize: true` 表示 users、sys_users。cfg.MongoDB 未提供时只生成代码；填写完整数据源后，执行同一条命令会先创建/同步集合、索引、校验器，再生成文件。数据源不完整或连接失败会停止。生成器与服务运行时 MongoConfig 应读取同一个项目的数据源，但生成器不会把连接串写入 Entity、Repository。
 
 ```bash
+# 先创建或修改 schema/*.json，再生成数据层。
 go run generator.go
 mongoplus goctl api go --api shop.api --dir . --style=goZero
 go mod tidy
 ```
 
-仓库内的 examples/gozero 使用 mongo-plus.yaml（同样是 YAML），generator.go 默认路径与该文件一致；可以通过 -config 指定其他 .yml/.yaml。
+字段调整只修改 JSON 并重新生成，不直接修改 Entity；DTO、VO 和业务 Repository 扩展保留既有业务内容，按接口需要同步维护。未配置生成器数据源时，发布前应在正确环境执行 `-action plan/apply`；MongoConfig.Enabled 只控制运行时连接，不触发结构同步。
+
+examples/gozero 的生成参数直接写在 generator.go。默认命令不连接数据库；`-config etc/shop-api.yaml` 使用 go-zero 的 `conf.Load` 读取已有 MongoConfig，保留服务配置的键名大小写兼容和默认值。该服务段需要 Enabled=true、完整 URI/Database；MaxPoolSize 省略时为 100，TimeoutSeconds 省略时为 10，显式填写时须在 1～3600 之间。
 
 也支持 `mongoplus goctl api new shop --style=goZero` 创建新服务。自定义模板可以通过原有 `--home` 指定；导出内嵌模板则执行：
 
@@ -138,7 +142,7 @@ reportUsers := repository.NewUserRepository(reportDB)      // 报表库。
 
 显式句柄不修改默认连接；仓储构造后不会随默认连接变化。传入 nil 或多个句柄会初始化失败，不会静默使用默认库或忽略多余参数。只需读取同一个 ServiceContext 中对应的句柄，不应在请求中调用 Use 切换数据库。完整构造契约与旧扩展文件升级方式见[默认连接与多个数据库](../README.md#默认连接与多个数据库)。
 
-需要同步 schema 时，运行时配置与可选 `mongo-plus.yaml` 中的数据库配置应指向相同的目标环境；URI 从业务配置读取，不写进 Entity、Repository 或 Logic。
+同步 schema 时用 `go run generator.go -action plan/apply -config etc/shop-api.yaml` 复用同一环境的运行时连接，URI 不写进 Entity、Repository 或 Logic。
 
 在生成的 ServiceContext 中添加业务需要的 Repository 字段和构造赋值，例如：
 
@@ -169,7 +173,7 @@ if err != nil {
 }
 ```
 
-复杂关联、统计与事务放在非生成的 Repository 扩展中，继续传递请求 ctx 或 Transaction 提供的 txCtx。main 在服务结束时先 Stop HTTP，再通过 ServiceContext.Close 释放 Client。集合、校验器和索引可在配置了数据源的代码生成阶段同步，或单独使用 schema plan/apply 预览和执行；不随服务启动自动迁移。
+复杂关联、统计与事务放在非生成的 Repository 扩展中，继续传递请求 ctx 或 Transaction 提供的 txCtx。main 在服务结束时先 Stop HTTP，再通过 ServiceContext.Close 释放 Client。集合、校验器和索引可在配置了数据源的代码生成阶段同步，或单独使用 generator.go 的 plan/apply 预览和执行；不随服务启动自动迁移。
 
 ## 5. Makefile：生成、启动与构建
 
@@ -200,10 +204,10 @@ build: swagger
 	go build -o bin/shop .
 
 schema-plan:
-	mongoplus schema plan --config mongo-plus.yaml
+	go run generator.go -action plan -config etc/shop-api.yaml
 
 schema-apply:
-	mongoplus schema apply --config mongo-plus.yaml
+	go run generator.go -action apply -config etc/shop-api.yaml
 ```
 
 可参考 [示例 Makefile](../examples/gozero/Makefile) 将 install-tools 作为 validate 的前置依赖，以保证安装、校验、生成按顺序执行。日常 run/build 不自动更新 CLI、不重新生成 Handler 或改动业务 Logic。

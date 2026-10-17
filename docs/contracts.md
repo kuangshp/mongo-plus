@@ -2,6 +2,21 @@
 
 本表描述当前封装的行为。没有封装的官方能力通过业务仓储中的 DALNative/Native 扩展；扩展调用需要业务明确维护权限、事务 Context、敏感字段及缓存失效。
 
+## JSON 模型生成与结构同步
+
+| 入口 / 对象 | 契约 |
+| --- | --- |
+| `Generate` / `generator.Generate` | 必须先有 `SchemaDir` 中的 JSON 定义；不读取手写 Entity，不提供反射模型入口 |
+| `SyncSchema` / `RunGenerator` 的 plan/apply | 从 JSON 加载模型规则；需要完整数据源，服务启动不自动执行 |
+| `RunGenerator` 的 check | 校验配置和 JSON，渲染全部输出，检查跨文件声明与覆盖冲突；不连接数据库、不写文件 |
+| `schema.Plan/Apply` | 只接受 `LoadEntities` 加载后未修改的元数据；伪造 Source、直接构造或加载后改写均在数据库访问前拒绝 |
+| Entity / DAO / Repository 基础实现 | 由 JSON 生成；Entity 字段只在 JSON 修改，禁止手写替代 |
+| DTO / VO / 聚合结果 / 业务仓储扩展 | 按业务维护，不作为集合结构定义来源 |
+
+所有高层生成/同步入口先完成本地生成预检，结构同步和代码输出共享同一份 JSON 快照。预检不替代业务编译；数据库 DDL 与文件写入不是整体原子事务。
+
+旧版 `GenerateModels`、`SyncModels`、`schema.FromModels` 等入口已移除；迁移步骤和完整替换表见 [JSON 模型生成文档](generator.md#4-已有手写模型如何迁移)。
+
 ## 仓储数据库选择
 
 生成的 `NewXRepository()` 在构造时绑定默认连接；`NewXRepository(db)` 绑定传入的原始句柄，并且不要求或修改默认连接。之后变更默认连接不影响已有仓储。无效默认连接、显式 nil、未初始化句柄及多个句柄均在初始化时报错，不会静默回退或只取第一个参数。详见[默认连接与多个数据库](../README.md#默认连接与多个数据库)。

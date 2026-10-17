@@ -8,7 +8,7 @@
 - 所有写方法都检查驱动的 Acknowledged；`w=0` 返回 ErrUnacknowledgedWrite，影响数为 0 时不能忽略该错误。已获确认但未命中仍返回 0、nil。
 - 查询缓存默认关闭。显式开启时，同时限制结果条数、总保留容量和单条容量；容量是 Go 对象估算，不是 RSS 硬限制。同 Client 同库的包装器共享失效通知，保留独立的查询结果和解码配置。跨 Client、多进程或外部写入要求实时读取时，对所有包装器设置 `ConfigureCache(CacheConfig{Disabled: true})`，强制绕过缓存和 SingleFlight。
 - ScanByPage 分别执行计数和列表聚合，列表通过游标逐文档返回，整页可以超过 16 MiB，不使用 facet。单条结果仍受 MongoDB 文档大小限制；两次查询需要一致快照时，通过 Transaction 的可选参数配置 `options.Transaction().SetReadConcern(readconcern.Snapshot())`。
-- schema plan/apply 比较校验规则及 strict/error 状态；不会补齐历史数据，也不会自动替换冲突索引。结构同步不是整体事务。
+- generator.go 的 plan/apply 比较校验规则及 strict/error 状态；不会补齐历史数据，也不会自动替换冲突索引。结构同步不是整体事务。
 
 ## 本地回归与基准
 
@@ -40,6 +40,32 @@ MONGOPLUS_FAILOVER_URI='mongodb://127.0.0.1:27017,127.0.0.1:27018,127.0.0.1:2701
 ```
 
 该测试要求至少三个成员，确认主节点变化，并验证切主后原数据可读、批量事务可提交。持续集成在其他集成测试完成后单独运行，避免切主干扰其他测试。它不覆盖任意网络分区、磁盘故障、分片迁移或长时间高负载；这些应在业务预发布环境按实际部署演练。
+
+## 本机 mongosh 日志重放验证
+
+使用独立测试副本集，并将路径指向已安装的真实 mongosh：
+
+```bash
+MONGOPLUS_TEST_URI='测试专用副本集URI' \
+MONGOPLUS_MONGOSH_PATH='/绝对路径/mongosh' \
+  go test -race -count=1 -run '^TestShellStatementsExecuteInMongosh$' .
+```
+
+测试实际执行日志生成的增删改查及聚合语句，再由官方 Go 驱动核对数据和 BSON 类型。CI 保持使用 `MONGOPLUS_MONGOSH_CONTAINER`；两者同时配置时优先使用本机路径。只配置数据库 URI 不会启动重放测试。
+
+## 2026-10-17 本机兼容性验收记录
+
+基于包含未提交改动的 v0.1.0 工作区，在 macOS arm64 上使用独立的原生三节点副本集验证；不是线上部署或业务容量验收。
+
+| MongoDB | 全量 race、Gin/go-zero 集成 | mongosh 2.13.0 日志重放 | 单独切主与事务恢复 |
+| --- | --- | --- | --- |
+| 6.0.18 | 597 项测试及子测试通过 | 通过 | 通过 |
+| 7.0.0 | 597 项测试及子测试通过 | 通过 | 通过 |
+| 8.0.0 | 597 项测试及子测试通过 | 通过 | 通过 |
+
+全量测试中的切主项有意跳过，再在正常集成完成后单独执行并通过。Linux amd64 交叉构建、Go 1.25.5 构建及 go vet 通过；govulncheck 报告可达漏洞为 0，另有 4 条未被本库调用的依赖模块告警。生成失败不改变已有校验器或阻止旧写入、跨实体重名拒绝、JSON 快照一致性及发布保护均有回归覆盖。
+
+该结果支持版本发布和业务预发布接入；正式生产仍应使用项目实际 JSON、历史数据与索引、权限上下文及目标并发进行验收，再灰度上线。代码生成及业务编译在发布前完成，结构变更独立审核，不在请求处理时自动迁移。
 
 ## 接入前的业务验证
 

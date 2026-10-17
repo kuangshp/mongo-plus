@@ -1,0 +1,9 @@
+{
+  "collection": "users",
+  "comment": "DAL 示例用户",
+  "fields": [
+    {"name": "username", "type": "string", "comment": "用户名"},
+    {"name": "status", "type": "int64", "comment": "用户状态"},
+    {"name": "dept_id", "type": "int64", "comment": "所属部门 ID"}
+  ]
+}

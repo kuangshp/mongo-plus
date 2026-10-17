@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/kuangshp/mongo-plus/internal/testutil"
@@ -50,7 +51,7 @@ func TestSchemaApplyAndIdempotency(t *testing.T) {
 		t.Fatalf("required 不应等价于非空 %v", err)
 	}
 	// 结构同步更新规则，不会自动为历史文档补字段。
-	entities[0].Fields = append(entities[0].Fields, Field{Name: "mobile", GoName: "Mobile", Type: "string", Required: true})
+	entities[0] = loadEntityDefinition(t, c, "user", `{"timestamps":false,"fields":[{"name":"username","type":"string","required":true,"unique":true},{"name":"status","type":"int64"},{"name":"mobile","type":"string","required":true}]}`)
 	if _, err = Apply(ctx, db, entities); err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +120,8 @@ func TestIndexConflictAndActiveOnly(t *testing.T) {
 	if _, err = users.InsertOne(ctx, bson.M{"_id": int64(2), "username": "one", "deleted_at": bson.DateTime(1)}); err != nil {
 		t.Fatal(err)
 	}
-	entities[0].Indexes[0].Unique = false
-	if _, err = Plan(ctx, db, entities); err == nil {
+	entities[0] = loadEntityDefinition(t, c, "user", `{"timestamps":false,"fields":[{"name":"username","type":"string"}],"indexes":[{"name":"uk_active_name","fields":[{"name":"username","order":1}],"unique":false,"activeOnly":true}]}`)
+	if _, err = Plan(ctx, db, entities); err == nil || !strings.Contains(err.Error(), "冲突") {
 		t.Fatal("未发现索引定义冲突")
 	}
 }
@@ -129,14 +130,9 @@ func TestSchemaRepairsValidationModeDrift(t *testing.T) {
 	ctx := context.Background()
 	db := testutil.Database(t)
 	c := testConfig(t, map[string]string{"user": `{"timestamps":false,"fields":[{"name":"name","type":"string","required":true}]}`})
-	entities, err := LoadEntities(c)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, mode := range []struct{ level, action string }{{"off", "error"}, {"strict", "warn"}, {"moderate", "error"}, {"off", "warn"}} {
 		t.Run(mode.level+"-"+mode.action, func(t *testing.T) {
-			e := entities[0]
-			e.Collection = "drift_" + mode.level + "_" + mode.action
+			e := loadEntityDefinition(t, c, "drift_"+mode.level+"_"+mode.action, `{"timestamps":false,"fields":[{"name":"name","type":"string","required":true}]}`)
 			if err := db.CreateCollection(ctx, e.Collection, options.CreateCollection().SetValidator(e.Validator()).SetValidationLevel(mode.level).SetValidationAction(mode.action)); err != nil {
 				t.Fatal(err)
 			}

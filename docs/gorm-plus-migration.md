@@ -6,7 +6,7 @@ mongo-plus 以 gorm-plus 的业务使用习惯为参照：根目录 `generator.g
 
 | gorm-plus | mongo-plus |
 | --- | --- |
-| `GeneratorConfig` / `Generate` / `go run generator.go` | 同名入口；输入改为集合 JSON 定义或手写 Entity |
+| `GeneratorConfig` / `Generate` / `go run generator.go` | 同名入口；输入统一为集合 JSON 定义 |
 | `repository.NewUserRepository()` | 启动时 `mongoplus.Use(db)` 后同样 `NewUserRepository()`；`NewUserRepository(db)` 仍优先使用传入连接 |
 | `dao.UserEntity.ID.Eq(id)` | 同样的类型安全字段调用；类型来自当前生成实体 |
 | `FindById` / `FindByIdList` / `FindOne` / `FindOneWrapper` | 保留方法名、上下文和查询选项的位置 |
@@ -28,9 +28,9 @@ mongo-plus 以 gorm-plus 的业务使用习惯为参照：根目录 `generator.g
 
 ## 生成与注入
 
-继续使用项目根目录的 `generator.go`。`Package`、`ModelPkgPath`、`OutPath`、`RepoPath`、`DtoPath`、`VoPath` 等常用配置沿用 gorm-plus 的目录含义，配置示例见 [README](../README.md#1-全局配置一次实体按需覆盖)。
+继续使用项目根目录的 `generator.go`。`Package`、`ModelPkgPath`、`OutPath`、`RepoPath`、`DtoPath`、`VoPath` 等常用配置沿用 gorm-plus 的目录含义，生成配置仅在 Go 中维护，LoadGeneratorConfig / schema.LoadConfig 与专用生成 YAML 已移除；原生成 CLI 迁移为 generator.go 的 action。配置示例见 [README](../README.md#1-全局配置一次实体按需覆盖)。
 
-关系表 DDL 改为集合 JSON 定义，或通过 `GenerateModels` 注册已有带 BSON 标签的 Entity。配置了业务 MongoDB 数据源时，`Generate` 先同步集合、索引和校验器再生成文件；没有数据源时只生成代码。不要把 MySQL SQL 文件传入 MongoDB 生成器。
+关系表 DDL 改为集合 JSON 定义；不再支持通过手写 Entity 生成模型或同步集合。旧版 `GenerateModels` / `SyncModels` / `schema.FromModels` 已移除，旧入口替换表、迁移步骤和常见错误见 [JSON 模型生成与集合同步](generator.md#4-已有手写模型如何迁移)。配置了业务 MongoDB 数据源时，`Generate` 先同步集合、索引和校验器再生成文件；没有数据源时只生成代码。不要把 MySQL SQL 文件传入 MongoDB 生成器。
 
 ```go
 db, err := mongoplus.Connect(ctx, mongoConfig)

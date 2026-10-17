@@ -15,11 +15,12 @@ import (
 )
 
 // 直接让真正的 mongosh 执行日志，再用官方 Go 驱动检查结果和 BSON 类型。
-// 只操作 testutil 创建的随机数据库，CI 使用测试副本集现成的 MongoDB 容器。
+// 只操作 testutil 创建的随机数据库；本机可指定 mongosh 路径，CI 复用数据库容器。
 func TestShellStatementsExecuteInMongosh(t *testing.T) {
+	mongosh := os.Getenv("MONGOPLUS_MONGOSH_PATH")
 	container := os.Getenv("MONGOPLUS_MONGOSH_CONTAINER")
-	if container == "" {
-		t.Skip("设置 MONGOPLUS_MONGOSH_CONTAINER 运行真实 mongosh 重放测试")
+	if mongosh == "" && container == "" {
+		t.Skip("设置 MONGOPLUS_MONGOSH_PATH 或 MONGOPLUS_MONGOSH_CONTAINER 运行真实 mongosh 重放测试")
 	}
 	db := testutil.Database(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -79,7 +80,12 @@ func TestShellStatementsExecuteInMongosh(t *testing.T) {
 		name := "result" + strconv.Itoa(i)
 		script.WriteString("const " + name + " = " + value + ";\nif (" + name + " && " + name + ".ok === 0) throw new Error('command failed');\n")
 	}
-	cmd := exec.CommandContext(ctx, "docker", "exec", container, "mongosh", os.Getenv("MONGOPLUS_TEST_URI"), "--quiet", "--eval", script.String())
+	var cmd *exec.Cmd
+	if mongosh != "" {
+		cmd = exec.CommandContext(ctx, mongosh, os.Getenv("MONGOPLUS_TEST_URI"), "--quiet", "--eval", script.String())
+	} else {
+		cmd = exec.CommandContext(ctx, "docker", "exec", container, "mongosh", os.Getenv("MONGOPLUS_TEST_URI"), "--quiet", "--eval", script.String())
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("mongosh 执行日志失败: %v\n%s\n%s", err, out, script.String())
 	}

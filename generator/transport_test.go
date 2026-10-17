@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	manual "github.com/kuangshp/mongo-plus/examples/manual/model"
 	"github.com/kuangshp/mongo-plus/schema"
 )
 
@@ -122,9 +121,12 @@ func TestVO(t *testing.T) {
 	compileFixture(t, dir)
 }
 
-func TestTransportForHandwrittenModelAndOptIn(t *testing.T) {
+func TestTransportForJSONModelAndOptIn(t *testing.T) {
 	c, dir := fixture(t)
-	if _, err := GenerateModels(c, schema.Model{Value: manual.DocumentEntity{}, Collection: "documents"}); err != nil {
+	if err := os.WriteFile(filepath.Join(c.SchemaDir, "document.json"), []byte(`{"fields":[{"name":"title","type":"string","required":true},{"name":"address","type":"object","fields":[{"name":"city","type":"string"}]}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(c); err != nil {
 		t.Fatal(err)
 	}
 	for _, pkg := range []string{"dto", "vo"} {
@@ -133,7 +135,7 @@ func TestTransportForHandwrittenModelAndOptIn(t *testing.T) {
 		}
 	}
 	c.DtoPath, c.VoPath = "query/dto", "query/vo"
-	if _, err := GenerateModels(c, schema.Model{Value: manual.DocumentEntity{}, Collection: "documents"}); err != nil {
+	if _, err := Generate(c); err != nil {
 		t.Fatal(err)
 	}
 	compileFixture(t, dir)

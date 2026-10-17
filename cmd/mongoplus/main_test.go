@@ -2,8 +2,7 @@ package main
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,39 +19,12 @@ func TestCLIRejectsInvalidCommands(t *testing.T) {
 	}
 }
 
-func TestGenerateUsesOptionalYAMLDataSource(t *testing.T) {
-	for _, item := range []struct {
-		name, source string
-		invalid      bool
-	}{
-		{"omitted", "", false},
-		{"partial", "mongodb:\n  database: shop\n", true},
-		{"invalid", "mongodb:\n  uri: invalid-uri\n  database: shop\n", true},
-	} {
-		t.Run(item.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.Mkdir(filepath.Join(dir, "schema"), 0755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "schema/user.json"), []byte(`{"fields":[]}`), 0600); err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(dir, "generator.yml")
-			if err := os.WriteFile(path, []byte("package: example.com/shop\n"+item.source), 0600); err != nil {
-				t.Fatal(err)
-			}
-			var output bytes.Buffer
-			err := run([]string{"generate", "--config", path}, &output, &output)
-			if (err != nil) != item.invalid {
-				t.Fatalf("结果不正确: %v\n%s", err, output.String())
-			}
-			_, stat := os.Stat(filepath.Join(dir, "query/model/user_entity.go"))
-			if item.invalid && !os.IsNotExist(stat) {
-				t.Fatal("数据源错误后仍生成文件")
-			}
-			if !item.invalid && stat != nil {
-				t.Fatalf("省略数据源没有生成文件: %v", stat)
-			}
-		})
+func TestRemovedGeneratorCommands(t *testing.T) {
+	for _, args := range [][]string{{"generate"}, {"check"}, {"schema", "plan"}, {"schema", "apply"}} {
+		var output bytes.Buffer
+		err := run(args, &output, &output)
+		if err == nil || !strings.Contains(err.Error(), "go run generator.go") {
+			t.Fatalf("旧入口未返回迁移提示: %v %v", args, err)
+		}
 	}
 }

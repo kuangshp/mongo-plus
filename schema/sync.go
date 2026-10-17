@@ -34,15 +34,14 @@ type existingIndex struct {
 	LanguageOverride string `bson:"language_override"`
 }
 
-// Plan 比较集合、校验器和索引；检测冲突时在任何写操作前返回错误。
+// Plan 比较集合、校验器和索引；仅接受 LoadEntities 从 JSON 文件加载的未修改元数据。
+// 修改结构必须先修改 JSON 并重新加载；检测冲突时在任何写操作前返回错误。
 func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change, error) {
 	if ctx == nil || db == nil {
 		return nil, fmt.Errorf("结构计划需要上下文和数据库")
 	}
-	for _, entity := range entities {
-		if entity.ID == nil || entity.SoftDelete == nil || entity.Timestamps == nil || entity.Collection == "" {
-			return nil, fmt.Errorf("集合 %q 未完成 Normalize，不能生成结构计划", entity.Collection)
-		}
+	if err := validateLoadedEntities(entities); err != nil {
+		return nil, err
 	}
 	changes := []Change{}
 	for _, e := range entities {
@@ -129,6 +128,10 @@ func Plan(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change,
 // Apply 同步创建集合、校验规则和缺失索引，不删除已有数据/索引。
 // 这些管理命令不是一个原子事务；失败后可修复原因并重新执行 Plan/Apply。
 func Apply(ctx context.Context, db *mongo.Database, entities []Entity) ([]Change, error) {
+	// 在获取迁移锁（可能写入数据库）之前拒绝非 JSON 来源。
+	if err := validateLoadedEntities(entities); err != nil {
+		return nil, err
+	}
 	var changes []Change
 	err := migration.WithLock(ctx, db, func(lockedCtx context.Context) error {
 		var applyErr error

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mp "github.com/kuangshp/mongo-plus"
+	"github.com/kuangshp/mongo-plus/examples/dal/generated/model"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -18,16 +19,8 @@ import (
 //go:embed query
 var queryFiles embed.FS
 
-// User 是手写实体示例；已有业务项目直接复用生成的 Entity。
-type User struct {
-	ID        int64      `bson:"_id"`
-	CompanyID int64      `bson:"company_id"`
-	DeptID    int64      `bson:"dept_id"`
-	Username  string     `bson:"username"`
-	Status    int64      `bson:"status"`
-	UpdatedAt time.Time  `bson:"updated_at"`
-	DeletedAt *time.Time `bson:"deleted_at"`
-}
+// User 复用 schema/user.json 生成的实体；业务仓储不再维护第二份数据模型。
+type User = model.UserEntity
 
 // DepartmentSummary 是聚合投影结果，不要求与实体字段一致。
 type DepartmentSummary struct {

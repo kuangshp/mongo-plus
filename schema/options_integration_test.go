@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/kuangshp/mongo-plus/internal/testutil"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func TestExtendedIndexAndCollectionOptions(t *testing.T) {
@@ -19,14 +19,8 @@ func TestExtendedIndexAndCollectionOptions(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	var e Entity
 	input := `{"collection":"extended","options":{"collation":{"locale":"en","strength":2},"changeStreamPreAndPostImages":true,"validationLevel":"moderate","validationAction":"error"},"fields":[{"name":"title","type":"string","rules":{"minLength":2}},{"name":"status","type":"int64"},{"name":"location","type":"json"}],"indexes":[{"name":"title_partial","fields":[{"name":"title","order":1}],"partialFilterExpression":{"status":1},"hidden":true},{"name":"status_hash","fields":[{"name":"status","order":"hashed"}],"collation":{"locale":"simple"}},{"name":"location_geo","fields":[{"name":"location","order":"2dsphere"}]},{"name":"title_text","fields":[{"name":"title","order":"text"}],"collation":{"locale":"simple"},"weights":{"title":2}},{"name":"wildcard","fields":[{"name":"$**","order":1}]}]}`
-	if err := json.Unmarshal([]byte(input), &e); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Normalize(cfg, "extended"); err != nil {
-		t.Fatal(err)
-	}
+	e := loadEntityDefinition(t, cfg, "extended", input)
 	if _, err := Apply(ctx, db, []Entity{e}); err != nil {
 		t.Fatal(err)
 	}
@@ -35,17 +29,13 @@ func TestExtendedIndexAndCollectionOptions(t *testing.T) {
 		t.Fatalf("重复 Plan 应无漂移: %+v %v", changes, err)
 	}
 	// Hidden 和 Collation 都是索引语义，不能只按键名判断已同步。
-	hidden := e
-	hidden.Indexes = append([]Index(nil), e.Indexes...)
-	hidden.Indexes[0].Hidden = false
-	if _, err = Plan(ctx, db, []Entity{hidden}); err == nil {
-		t.Fatal("未识别 hidden 冲突")
+	hidden := loadEntityDefinition(t, cfg, "extended", strings.Replace(input, `"hidden":true`, `"hidden":false`, 1))
+	if _, err = Plan(ctx, db, []Entity{hidden}); err == nil || !strings.Contains(err.Error(), "冲突") {
+		t.Fatalf("未识别 hidden 冲突: %v", err)
 	}
-	collated := e
-	collated.Indexes = append([]Index(nil), e.Indexes...)
-	collated.Indexes[0].Collation = &options.Collation{Locale: "en", Strength: 3}
-	if _, err = Plan(ctx, db, []Entity{collated}); err == nil {
-		t.Fatal("未识别 collation 冲突")
+	collated := loadEntityDefinition(t, cfg, "extended", strings.Replace(input, `"hidden":true`, `"hidden":true,"collation":{"locale":"en","strength":3}`, 1))
+	if _, err = Plan(ctx, db, []Entity{collated}); err == nil || !strings.Contains(err.Error(), "冲突") {
+		t.Fatalf("未识别 collation 冲突: %v", err)
 	}
 	doc := bson.M{"_id": bson.NewObjectID(), "title": "x", "created_at": bson.DateTime(0), "updated_at": bson.DateTime(0)}
 	if _, err = db.Collection(e.Collection).InsertOne(ctx, doc); err == nil {
@@ -93,10 +83,11 @@ func TestReviewCappedPlanRemainsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, size := range []int64{1, 256, 257, 4096, 4097} {
-		entity := Entity{Collection: fmt.Sprintf("capped_%d", i), Options: &CollectionOptions{Capped: true, SizeInBytes: size, MaxDocuments: 100}}
-		if err := entity.Normalize(cfg, entity.Collection); err != nil {
-			t.Fatal(err)
+		name := fmt.Sprintf("capped_%d", i)
+		definition := func(size int64) string {
+			return fmt.Sprintf(`{"collection":%q,"options":{"capped":true,"sizeInBytes":%d,"maxDocuments":100},"fields":[]}`, name, size)
 		}
+		entity := loadEntityDefinition(t, cfg, name, definition(size))
 		if _, err := Apply(ctx, db, []Entity{entity}); err != nil {
 			t.Fatal(err)
 		}
@@ -107,8 +98,8 @@ func TestReviewCappedPlanRemainsIdempotent(t *testing.T) {
 		if _, err = Apply(ctx, db, []Entity{entity}); err != nil {
 			t.Fatalf("重复 Apply: %v", err)
 		}
-		entity.Options.SizeInBytes += 256
-		if _, err = Plan(ctx, db, []Entity{entity}); err == nil {
+		entity = loadEntityDefinition(t, cfg, name, definition(size+256))
+		if _, err = Plan(ctx, db, []Entity{entity}); err == nil || !strings.Contains(err.Error(), "冲突") {
 			t.Fatal("真正容量漂移不能被忽略")
 		}
 	}

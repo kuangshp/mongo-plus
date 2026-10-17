@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	mp "github.com/kuangshp/mongo-plus"
-	manual "github.com/kuangshp/mongo-plus/examples/manual/model"
 	"github.com/kuangshp/mongo-plus/internal/testutil"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -18,18 +17,14 @@ import (
 func syncConfig(t *testing.T) *mp.GeneratorConfig {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "generator.yaml")
-	if err := os.WriteFile(path, []byte("package: example.com/shop\npluralize: true\nid:\n  type: int64\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Mkdir(filepath.Join(dir, "schema"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "schema/sysUser.json"), []byte(`{"timestamps":false,"fields":[{"name":"username","type":"string","required":true,"unique":true}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := mp.LoadGeneratorConfig(path)
-	if err != nil {
+	c := &mp.GeneratorConfig{ProjectDir: dir, Package: "example.com/shop", Pluralize: true, ID: mp.IDConfig{Type: mp.IDTypeInt64}}
+	if err := c.Normalize(); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -39,12 +34,9 @@ func TestPublicSchemaSyncErrors(t *testing.T) {
 	if _, err := mp.SyncSchema(context.Background(), nil); err == nil {
 		t.Fatal("nil 配置未报错")
 	}
-	if _, err := mp.SyncModels(context.Background(), nil); err == nil {
-		t.Fatal("nil 模型配置未报错")
-	}
 	c := syncConfig(t)
 	if !c.Pluralize {
-		t.Fatal("YAML 未读取集合后缀")
+		t.Fatal("Go 配置未读取集合后缀")
 	}
 	if _, err := mp.SyncSchema(nil, c); err == nil {
 		t.Fatal("nil context 未报错")
@@ -91,14 +83,7 @@ func TestPublicSchemaSyncCreatesEmptyCollections(t *testing.T) {
 	if _, err := collection.InsertOne(ctx, bson.M{"_id": int64(3), "username": 123}); err == nil {
 		t.Fatal("数据库校验器未创建")
 	}
-	models := []mp.GeneratorModel{{Value: manual.DocumentEntity{}}}
-	changes, err = mp.SyncModels(ctx, c, models...)
-	if err != nil || len(changes) != 1 || changes[0].Collection != "documents" {
-		t.Fatalf("手写实体同步失败 %+v %v", changes, err)
-	}
-	if changes, err := mp.SyncModels(ctx, c, models...); err != nil || len(changes) != 0 {
-		t.Fatalf("手写实体重复同步非幂等 %+v %v", changes, err)
-	}
+
 }
 
 func TestPublicGenerateWithOptionalDataSource(t *testing.T) {
@@ -121,29 +106,41 @@ func TestPublicGenerateWithOptionalDataSource(t *testing.T) {
 	if count, err := db.Collection("sys_users").CountDocuments(ctx, bson.D{}); err != nil || count != 0 {
 		t.Fatalf("Generate 应创建空集合: %d %v", count, err)
 	}
-	if err := mp.GenerateModels(c, mp.GeneratorModel{Value: manual.DocumentEntity{}}); err != nil {
-		t.Fatal(err)
-	}
-	if names, err := db.ListCollectionNames(ctx, bson.M{"name": "documents"}); err != nil || len(names) != 1 {
-		t.Fatalf("GenerateModels 未自动同步: %v %v", names, err)
-	}
+
 }
 
 func TestPublicGenerateStopsOnInvalidDataSource(t *testing.T) {
-	for _, manualModel := range []bool{false, true} {
-		c := syncConfig(t)
-		c.MongoDB = mp.Config{URI: "invalid-uri", Database: "shop"}
-		var err error
-		if manualModel {
-			err = mp.GenerateModels(c, mp.GeneratorModel{Value: manual.DocumentEntity{}})
-		} else {
-			err = mp.Generate(c)
-		}
-		if err == nil {
-			t.Fatal("数据源错误仍继续生成")
-		}
-		if _, err := os.Stat(c.RepoPath); !os.IsNotExist(err) {
-			t.Fatal("同步失败时生成了文件")
-		}
+	c := syncConfig(t)
+	c.MongoDB = mp.Config{URI: "invalid-uri", Database: "shop"}
+	if err := mp.Generate(c); err == nil {
+		t.Fatal("数据源错误仍继续生成")
+	}
+	if _, err := os.Stat(c.RepoPath); !os.IsNotExist(err) {
+		t.Fatal("同步失败时生成了文件")
+	}
+}
+
+// JSON 必须在连接数据库之前校验，避免错误配置触发数据库副作用。
+func TestPublicSchemaEntrypointsRequireJSON(t *testing.T) {
+	for _, operation := range []string{"generate", "sync"} {
+		t.Run(operation, func(t *testing.T) {
+			c := syncConfig(t)
+			if err := os.RemoveAll(c.SchemaDir); err != nil {
+				t.Fatal(err)
+			}
+			c.MongoDB = mp.Config{URI: "invalid-uri", Database: "shop"}
+			var err error
+			if operation == "generate" {
+				err = mp.Generate(c)
+			} else {
+				_, err = mp.SyncSchema(context.Background(), c)
+			}
+			if err == nil || !strings.Contains(err.Error(), "没有 JSON 实体定义") {
+				t.Fatalf("未优先拒绝缺少 JSON: %v", err)
+			}
+			if _, err := os.Stat(c.RepoPath); !os.IsNotExist(err) {
+				t.Fatal("无 JSON 时生成了文件")
+			}
+		})
 	}
 }

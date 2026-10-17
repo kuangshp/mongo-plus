@@ -16,68 +16,68 @@ import (
 	"github.com/kuangshp/mongo-plus/internal/settings"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
-	"gopkg.in/yaml.v3"
 )
 
-// Config 是 mongo-plus.yaml；全局主键只需配置一次。
+// Config 在 generator.go 中直接配置；全局主键只需配置一次。
 type Config struct {
-	// Package 与 gorm-plus 的 GeneratorConfig.Package 含义相同；Module 为旧配置兼容字段。
-	Package   string `yaml:"package" json:"package"`
-	Module    string `yaml:"module" json:"module"`
-	SchemaDir string `yaml:"schemaDir" json:"schemaDir"`
-	Output    string `yaml:"output" json:"output"`
+	// ProjectDir 是业务项目根目录；留空时使用首次 Normalize 时的工作目录。
+	ProjectDir string
+	// Package 是业务 Go module；Module 为已有 Go 调用的兼容别名。
+	Package   string
+	Module    string
+	SchemaDir string
+	Output    string
 	// Pluralize 为 true 时给自动推导的集合名追加 s；false（默认）不追加。
-	Pluralize bool `yaml:"pluralize" json:"pluralize"`
+	Pluralize bool
 	// 可分别指定输出位置；未填写时沿用 Output 下的 model/dao/repository。
-	ModelPkgPath string `yaml:"model_pkg_path" json:"modelPkgPath"`
-	OutPath      string `yaml:"out_path" json:"outPath"`
-	RepoPath     string `yaml:"repo_path" json:"repoPath"`
+	ModelPkgPath string
+	OutPath      string
+	RepoPath     string
 	// DTO/VO 与 gorm-plus 一样按需生成；留空时不生成，首次创建后保留业务修改。
-	DtoPath    string            `yaml:"dto_path" json:"dtoPath"`
-	VoPath     string            `yaml:"vo_path" json:"voPath"`
-	ID         settings.IDConfig `yaml:"id" json:"id"`
-	SoftDelete *bool             `yaml:"softDelete" json:"softDelete"`
-	Timestamps *bool             `yaml:"timestamps" json:"timestamps"`
-	Tenant     *Tenant           `yaml:"tenant" json:"tenant"`
-	MongoDB    settings.Config   `yaml:"mongodb" json:"mongodb"`
+	DtoPath    string
+	VoPath     string
+	ID         settings.IDConfig
+	SoftDelete *bool
+	Timestamps *bool
+	Tenant     *Tenant
+	MongoDB    settings.Config
 	base       string
 }
 
 // Tenant 声明自动注入的租户字段。
 type Tenant struct {
-	Name string `json:"name" yaml:"name"`
-	Type string `json:"type" yaml:"type"`
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // Entity 对应一个 schema/*.json 文件；ID/SoftDelete/Timestamps 可以覆盖全局默认。
 type Entity struct {
-	Entity        string             `json:"entity,omitempty"`
-	Collection    string             `json:"collection,omitempty"`
-	Comment       string             `json:"comment,omitempty"`
-	ID            *settings.IDConfig `json:"id,omitempty"`
-	SoftDelete    *bool              `json:"softDelete,omitempty"`
-	Timestamps    *bool              `json:"timestamps,omitempty"`
-	Options       *CollectionOptions `json:"options,omitempty"`
-	Fields        []Field            `json:"fields"`
-	Indexes       []Index            `json:"indexes,omitempty"`
-	Tenant        *Tenant            `json:"tenant,omitempty"`
-	Source        string             `json:"-"`
-	ExternalModel bool               `json:"-"`
-	ModelPackage  string             `json:"-"`
+	Entity     string             `json:"entity,omitempty"`
+	Collection string             `json:"collection,omitempty"`
+	Comment    string             `json:"comment,omitempty"`
+	ID         *settings.IDConfig `json:"id,omitempty"`
+	SoftDelete *bool              `json:"softDelete,omitempty"`
+	Timestamps *bool              `json:"timestamps,omitempty"`
+	Options    *CollectionOptions `json:"options,omitempty"`
+	Fields     []Field            `json:"fields"`
+	Indexes    []Index            `json:"indexes,omitempty"`
+	Tenant     *Tenant            `json:"tenant,omitempty"`
+	Source     string             `json:"-"`
+	// loaded 记录 JSON 加载后的不可变快照；结构同步拒绝手工构造或修改的元数据。
+	loaded *loadedEntity
 }
 
 // Field 用 name/type 声明字段，其他配置均可省略。
 type Field struct {
-	NativeGoType string  `json:"-"`
-	Name         string  `json:"name"`
-	Type         string  `json:"type"`
-	Comment      string  `json:"comment,omitempty"`
-	GoName       string  `json:"goName,omitempty"`
-	Required     bool    `json:"required,omitempty"`
-	Unique       bool    `json:"unique,omitempty"`
-	Nullable     bool    `json:"nullable,omitempty"`
-	Fields       []Field `json:"fields,omitempty"`
-	Rules        bson.M  `json:"rules,omitempty"` // 附加 JSON Schema 约束，不覆盖推导的类型/对象结构。
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Comment  string  `json:"comment,omitempty"`
+	GoName   string  `json:"goName,omitempty"`
+	Required bool    `json:"required,omitempty"`
+	Unique   bool    `json:"unique,omitempty"`
+	Nullable bool    `json:"nullable,omitempty"`
+	Fields   []Field `json:"fields,omitempty"`
+	Rules    bson.M  `json:"rules,omitempty"` // 附加 JSON Schema 约束，不覆盖推导的类型/对象结构。
 
 }
 
@@ -103,42 +103,6 @@ type Index struct {
 	LanguageOverride        string             `json:"languageOverride,omitempty"`
 }
 
-// LoadConfig 读取配置；路径相对配置文件，环境变量只在连接配置中展开。
-func LoadConfig(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, err
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var c Config
-	if err = decoder.Decode(&c); err != nil {
-		return c, err
-	}
-	var extra any
-	if err = decoder.Decode(&extra); err != io.EOF {
-		return c, fmt.Errorf("配置文件只能包含一个 YAML 文档")
-	}
-	c.base, err = filepath.Abs(filepath.Dir(path))
-	if err != nil {
-		return c, err
-	}
-	c.MongoDB.URI = os.ExpandEnv(c.MongoDB.URI)
-	c.MongoDB.Database = os.ExpandEnv(c.MongoDB.Database)
-	// 区分省略数据源与显式填写了空配置；环境变量展开后为空不能悄悄跳过同步。
-	var sections map[string]yaml.Node
-	if err = yaml.Unmarshal(data, &sections); err != nil {
-		return c, err
-	}
-	if node, exists := sections["mongodb"]; exists && node.Tag != "!!null" && !c.HasMongoDB() {
-		return c, fmt.Errorf("已配置 mongodb，uri、database 不能为空")
-	}
-	if err = c.Normalize(); err != nil {
-		return c, err
-	}
-	return c, nil
-}
-
 // HasMongoDB 表示生成器是否提供数据源；未提供时只生成代码。
 func (c Config) HasMongoDB() bool {
 	m := c.MongoDB
@@ -151,7 +115,12 @@ func (c Config) HasMongoDB() bool {
 func (c *Config) Normalize() error {
 	if c.base == "" {
 		var err error
-		c.base, err = os.Getwd()
+		c.base = c.ProjectDir
+		if c.base == "" {
+			c.base, err = os.Getwd()
+		} else {
+			c.base, err = filepath.Abs(c.base)
+		}
 		if err != nil {
 			return err
 		}
@@ -163,7 +132,7 @@ func (c *Config) Normalize() error {
 		c.Module = c.Package
 	}
 	if c.Module == "" || strings.ContainsAny(c.Module, " \t\n\\\"`") || strings.HasPrefix(c.Module, "/") {
-		return fmt.Errorf("Package（兼容 YAML 的 module）必须是业务项目的 Go module 路径")
+		return fmt.Errorf("Package 必须是业务项目的 Go module 路径")
 	}
 	if c.HasMongoDB() && (strings.TrimSpace(c.MongoDB.URI) == "" || strings.TrimSpace(c.MongoDB.Database) == "") {
 		return fmt.Errorf("已配置 mongodb，uri、database 不能为空")
@@ -230,7 +199,7 @@ func (c *Config) Normalize() error {
 	return nil
 }
 
-// BaseDir 返回配置文件所在目录。
+// BaseDir 返回 Normalize 解析的业务项目根目录。
 func (c Config) BaseDir() string { return c.base }
 
 // ImportPath 返回输出目录内包的导入路径。
@@ -301,6 +270,11 @@ func LoadEntities(c Config) ([]Entity, error) {
 		}
 		names[strings.ToLower(entity.Entity)] = true
 		collections[entity.Collection] = true
+		definition, err := json.Marshal(entity)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		entity.loaded = &loadedEntity{source: path, definition: string(definition)}
 		entities = append(entities, entity)
 	}
 	return entities, nil
